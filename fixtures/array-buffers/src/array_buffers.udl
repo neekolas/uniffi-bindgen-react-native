@@ -1,0 +1,4 @@
+namespace uniffi_array_buffers {
+    // A UDL `[ByRef] bytes` argument is `&[u8]` in Rust.
+    u32 udl_borrowed_bytes_checksum([ByRef] bytes bytes);
+};

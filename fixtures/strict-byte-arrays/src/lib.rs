@@ -124,4 +124,57 @@ pub fn consume_produced_bytes(producer: std::sync::Arc<dyn BytesProducer>, size:
     bytes.len() as u32
 }
 
+// --- `&[u8]` arguments -------------------------------------------------------
+
+#[uniffi::export]
+pub fn borrowed_bytes_checksum(bytes: &[u8]) -> u32 {
+    bytes.iter().map(|byte| u32::from(*byte)).sum()
+}
+
+#[uniffi::export]
+pub fn copy_borrowed_bytes(bytes: &[u8]) -> Vec<u8> {
+    bytes.to_vec()
+}
+
+#[uniffi::export]
+pub fn concat_borrowed_bytes(first: &[u8], second: &[u8]) -> Vec<u8> {
+    [first, second].concat()
+}
+
+#[uniffi::export]
+pub fn mix_owned_and_borrowed_bytes(first: &[u8], owned: Vec<u8>, last: &[u8]) -> Vec<u8> {
+    [first, owned.as_slice(), last].concat()
+}
+
+/// The distance in bytes from the start of `first` to the start of `second`,
+/// as Rust sees them.
+///
+/// Give it two overlapping views of one buffer. If Rust borrows the JS memory,
+/// the distance is the difference of the two `byteOffset`s. If the bindings
+/// copy the bytes, each copy is a separate allocation, and both are live
+/// during the call, so they cannot be that close together.
+#[uniffi::export]
+pub fn borrowed_bytes_distance(first: &[u8], second: &[u8]) -> i64 {
+    second.as_ptr() as i64 - first.as_ptr() as i64
+}
+
+#[derive(uniffi::Object)]
+pub struct BorrowedBytes {
+    prefix: Vec<u8>,
+}
+
+#[uniffi::export]
+impl BorrowedBytes {
+    #[uniffi::constructor]
+    pub fn new(prefix: &[u8]) -> Self {
+        Self {
+            prefix: prefix.to_vec(),
+        }
+    }
+
+    pub fn append(&self, bytes: &[u8]) -> Vec<u8> {
+        [self.prefix.as_slice(), bytes].concat()
+    }
+}
+
 uniffi::setup_scaffolding!();
