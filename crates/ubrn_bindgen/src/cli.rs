@@ -146,15 +146,29 @@ impl SourceArgs {
 impl BindingsArgs {
     pub fn run(&self, manifest_path: Option<&Utf8PathBuf>) -> Result<Vec<ModuleMetadata>> {
         let out = &self.output;
+        let switches = self.switches();
+        let source_path = path_or_shim(&self.source.source)?;
+
+        // Load the pipeline IR first, and check it before any file is written,
+        // so that an unsupported feature leaves no partial output.
+        // The pipeline needs per-crate configs (not the --config override) so that
+        // each namespace gets its own crate's uniffi.toml (e.g. custom type mappings).
+        let pipeline_loader = self.create_pipeline_loader(manifest_path)?;
+        let metadata = load_metadata(&pipeline_loader, &source_path)?;
+        let initial_root = pipeline_loader.load_pipeline_initial_root(&source_path, metadata)?;
+        // The general pipeline gives every enum a discriminant type, so read
+        // which enums declare one explicitly before it runs.
+        let explicit_discr_enums = collect_explicit_discr_enums(&initial_root);
+        let general_root = general::pipeline("react-native").execute(initial_root)?;
+        for namespace in general_root.namespaces.values() {
+            gen_typescript::api_module::reject_unsupported(namespace)?;
+        }
+        let loader = self.create_loader(manifest_path)?;
 
         mk_dir(&out.ts_dir)?;
         mk_dir(&out.cpp_dir)?;
         let ts_dir = out.ts_dir.canonicalize_utf8_or_shim()?;
         let abi_dir = out.cpp_dir.canonicalize_utf8_or_shim()?;
-        let switches = self.switches();
-
-        let source_path = path_or_shim(&self.source.source)?;
-        let loader = self.create_loader(manifest_path)?;
 
         // C++/Rust generation via ComponentInterface
         match &switches.flavor {
@@ -183,16 +197,6 @@ impl BindingsArgs {
         }
 
         // TypeScript generation via pipeline
-        // The pipeline needs per-crate configs (not the --config override) so that
-        // each namespace gets its own crate's uniffi.toml (e.g. custom type mappings).
-        let pipeline_loader = self.create_pipeline_loader(manifest_path)?;
-        let metadata = load_metadata(&pipeline_loader, &source_path)?;
-        let initial_root = pipeline_loader.load_pipeline_initial_root(&source_path, metadata)?;
-        // The general pipeline gives every enum a discriminant type, so read
-        // which enums declare one explicitly before it runs.
-        let explicit_discr_enums = collect_explicit_discr_enums(&initial_root);
-        let general_root = general::pipeline("react-native").execute(initial_root)?;
-
         generate_ffi_from_pipeline(
             &general_root,
             &switches,

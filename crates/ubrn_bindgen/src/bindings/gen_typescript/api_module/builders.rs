@@ -142,7 +142,8 @@ fn render_literal(config: &Config, lit: &general::Literal) -> String {
         }
         general::Literal::EmptySequence => "[]".into(),
         general::Literal::EmptyMap => "new Map()".into(),
-        general::Literal::EmptySet => unreachable!("Set is rejected in TsApiModule::from_general"),
+        // A later PR in the uniffi 0.32 stack adds Set here.
+        general::Literal::EmptySet => unreachable!("Set is rejected by reject_unsupported"),
         general::Literal::None => "undefined".into(),
         general::Literal::Some { inner } => render_default_value(config, inner),
     }
@@ -178,8 +179,9 @@ fn render_type_default(_config: &Config, ty: &general::Type) -> String {
         general::Type::Optional { .. } => "undefined".into(),
         general::Type::Sequence { .. } => "[]".into(),
         general::Type::Map { .. } => "new Map()".into(),
+        // A later PR in the uniffi 0.32 stack adds Set and Box here.
         general::Type::Box { .. } | general::Type::Set { .. } => {
-            unreachable!("Box and Set are rejected in TsApiModule::from_general")
+            unreachable!("Box and Set are rejected by reject_unsupported")
         }
         general::Type::Custom { builtin, .. } => render_type_default(_config, builtin),
         general::Type::Record { name, .. } => {

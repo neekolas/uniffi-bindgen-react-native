@@ -15,6 +15,7 @@
 
 - uniffi 0.32 changes the FFI, so bindings generated for 0.31.x do not work with a library built with 0.32.x. Regenerate your bindings after upgrading.
 - From uniffi-rs 0.32: an `async fn` that takes a `&[u8]` argument no longer compiles on native targets. UDL `[ByRef] bytes` arguments are now `&[u8]` in Rust, not `&Vec<u8>`. See the [uniffi-rs changelog](https://github.com/mozilla/uniffi-rs/blob/main/CHANGELOG.md).
+- `&[u8]` and UDL `[ByRef] bytes` arguments are not supported yet. uniffi-rs 0.32 passes them in a new way, and generation stops with an error that names the function. Use an owned `Vec<u8>` argument until support is added.
 - Building the `web` flavor needs `wasm-bindgen` on `PATH` again, at the version your `Cargo.lock` resolves for the `wasm-bindgen` crate: `cargo install wasm-bindgen-cli --version <that version>`. If you dropped that install after 0.31.0-5, put it back. `wasm2` needs the command only when your crate's dependency tree reaches `wasm-bindgen` — `js-sys`, `web-sys`, `getrandom`'s wasm backend, an HTTP client — and says so, with the version, if it is missing ([#454](https://github.com/jhugman/uniffi-bindgen-react-native/pull/454)).
 
 **Full Changelog**: https://github.com/jhugman/uniffi-bindgen-react-native/compare/0.31.0-5...main

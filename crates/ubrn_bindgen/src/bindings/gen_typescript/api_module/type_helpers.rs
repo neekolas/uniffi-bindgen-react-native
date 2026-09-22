@@ -93,8 +93,9 @@ pub(super) fn type_label_for(config: &Config, ty: &general::Type) -> String {
         general::Type::Sequence { inner_type } => {
             format!("Array<{}>", type_label_for(config, inner_type))
         }
+        // A later PR in the uniffi 0.32 stack adds Set and Box here.
         general::Type::Box { .. } | general::Type::Set { .. } => {
-            unreachable!("Box and Set are rejected in TsApiModule::from_general")
+            unreachable!("Box and Set are rejected by reject_unsupported")
         }
         general::Type::Map {
             key_type,

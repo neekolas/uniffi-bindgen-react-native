@@ -390,8 +390,9 @@ impl TsApiModule {
                     deferred_wrappers
                         .push(TsTypeDefinition::SimpleWrapper(build_sequence(config, seq)));
                 }
+                // A later PR in the uniffi 0.32 stack adds Set and Box here.
                 general::TypeDefinition::Box(_) | general::TypeDefinition::Set(_) => {
-                    unreachable!("Box and Set are rejected in TsApiModule::from_general")
+                    unreachable!("Box and Set are rejected by reject_unsupported")
                 }
                 general::TypeDefinition::Map(map) => {
                     deferred_wrappers.push(TsTypeDefinition::SimpleWrapper(build_map(config, map)));
@@ -500,7 +501,6 @@ impl TsApiModule {
         ffi_exported_definitions: Vec<ffi_module::FfiExportedName>,
         explicit_discr_enums: &HashSet<String>,
     ) -> anyhow::Result<Self> {
-        reject_unsupported_types(namespace)?;
         let module_name = namespace.name.clone();
         let namespace_docstring = namespace.docstring.as_deref().map(format_docstring);
         let supports_rust_backtrace = flavor.supports_rust_backtrace();
@@ -646,12 +646,21 @@ fn force_async_error_block(kind: &str, name: &str, methods: &[TsCallable]) -> Op
     ))
 }
 
-/// Returns an error if the namespace uses a type that this generator cannot
+/// Returns an error if the namespace uses something that this generator cannot
 /// write yet.
 ///
-/// uniffi-rs 0.32 added `Box<T>` and `HashSet<T>`. The TypeScript generator
-/// does not support them yet. The general pipeline adds a type definition for
-/// each type that the API uses, so one check here covers all uses.
+/// `cli.rs` calls this for every flavour before it writes any file, so an
+/// error leaves no partial output.
+pub(crate) fn reject_unsupported(namespace: &general::Namespace) -> anyhow::Result<()> {
+    reject_unsupported_types(namespace)?;
+    reject_borrowed_bytes(namespace)
+}
+
+/// uniffi-rs 0.32 added `Box<T>` and `HashSet<T>`. The generators do not
+/// support them yet. The general pipeline adds a type definition for each type
+/// that the API uses, so one check here covers all uses.
+///
+/// A later PR in the uniffi 0.32 stack adds Set and Box, and removes this check.
 fn reject_unsupported_types(namespace: &general::Namespace) -> anyhow::Result<()> {
     for td in &namespace.type_definitions {
         let (kind, self_type) = match td {
@@ -665,6 +674,47 @@ fn reject_unsupported_types(namespace: &general::Namespace) -> anyhow::Result<()
             self_type.canonical_name,
             namespace.name,
         );
+    }
+    Ok(())
+}
+
+/// uniffi-rs 0.32 passes a `&[u8]` or UDL `[ByRef] bytes` argument as
+/// `ForeignBytes` (pointer and length), not as a `RustBuffer`. The generators
+/// do not write that ABI yet, so the generated code would not work.
+///
+/// A later PR in the uniffi 0.32 stack adds `ForeignBytes` on all four
+/// flavours, and removes this check.
+fn reject_borrowed_bytes(namespace: &general::Namespace) -> anyhow::Result<()> {
+    let mut callables: Vec<(String, &general::Callable)> = namespace
+        .functions
+        .iter()
+        .map(|f| (format!("function `{}`", f.callable.name), &f.callable))
+        .collect();
+    for td in &namespace.type_definitions {
+        let (type_name, constructors, methods): (_, &[_], &[_]) = match td {
+            general::TypeDefinition::Interface(i) => (&i.name, &i.constructors, &i.methods),
+            general::TypeDefinition::Record(r) => (&r.name, &r.constructors, &r.methods),
+            general::TypeDefinition::Enum(e) => (&e.name, &e.constructors, &e.methods),
+            general::TypeDefinition::CallbackInterface(c) => (&c.name, &[], &c.methods),
+            _ => continue,
+        };
+        callables.extend(constructors.iter().map(|c| {
+            let name = format!("constructor `{type_name}.{}`", c.callable.name);
+            (name, &c.callable)
+        }));
+        callables.extend(methods.iter().map(|m| {
+            let name = format!("method `{type_name}.{}`", m.callable.name);
+            (name, &m.callable)
+        }));
+    }
+    for (what, callable) in callables {
+        if callable.arguments.iter().any(|a| a.is_borrowed_bytes()) {
+            anyhow::bail!(
+                "`&[u8]` / `[ByRef] bytes` arguments are not yet supported by \
+                uniffi-bindgen-react-native ({what} in namespace `{}`)",
+                namespace.name,
+            );
+        }
     }
     Ok(())
 }
