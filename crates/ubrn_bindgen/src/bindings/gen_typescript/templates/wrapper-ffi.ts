@@ -9,11 +9,17 @@
 {%- if module.is_jsi %}
 
 import {
+  {%- if module.has_continuation_callback || module.has_foreign_future %}
   type StructuralEquality as UniffiStructuralEquality,
+  {%- endif %}
+  {%- if module.has_foreign_future %}
   type UniffiForeignFuture as RuntimeUniffiForeignFuture,
+  {%- endif %}
   type UniffiRustCallStatus,
   type UniffiGcObject,
+  {%- if module.has_continuation_callback %}
   type UniffiRustFutureContinuationCallback as RuntimeUniffiRustFutureContinuationCallback,
+  {%- endif %}
   type UniffiResult,
  } from '@ubjs/core';
 
@@ -55,12 +61,15 @@ export default getter;
 {%- endmatch %}
 {%- endfor %}
 {%- if module.is_jsi %}
+{#- uniffi-rs 0.32 declares the future types only for a module that uses
+    async, so write each check, and its comment, only when there is a type
+    to check. #}
+{%- if module.has_continuation_callback %}
 
 // UniffiRustFutureContinuationCallback is generated as part of the component interface's
 // ffi_definitions. However, we need it in the runtime.
 // We chose to generate the declaration anyway, and use a different declaration in the runtime.
 // We perform a compile time check that the two versions are structurally equivalent.
-{%- if module.has_continuation_callback %}
 const isRustFutureContinuationCallbackTypeCompatible: UniffiStructuralEquality<
   RuntimeUniffiRustFutureContinuationCallback,
   UniffiRustFutureContinuationCallback
