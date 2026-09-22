@@ -10,9 +10,11 @@ import { FfiType } from "../src/ffi-type.js";
 import {
   buildJitDispatcher,
   canUseFunctionConstructor,
+  specializeFunction,
   type DispatchContext,
   type FunctionDef,
 } from "../src/call.js";
+import { readForeignBytes, readRustBuffer } from "../src/marshal.js";
 import { Memory } from "../src/memory.js";
 import { Scratch } from "../src/scratch.js";
 
@@ -321,4 +323,145 @@ test("registerSync({disableJit:true}) still produces a working dispatcher", asyn
   const result = nm.uniffi_test_add(5, 6, status);
   assert.strictEqual(result, 11);
   assert.strictEqual(status.code, 0);
+});
+
+/**
+ * A dispatch context over a real `WebAssembly.Memory` for `&[u8]` tests. The
+ * allocator hands out addresses in a new page each time, so every `alloc`
+ * grows memory and detaches every view over the old memory.
+ */
+function growingContext() {
+  const wasmMem = new WebAssembly.Memory({ initial: 1 });
+  const memory = new Memory(wasmMem);
+  const scratch = new Scratch(
+    256,
+    1024,
+    () => 0,
+    () => {},
+  );
+  const allocs: Array<[number, number]> = [];
+  const frees: Array<[number, number]> = [];
+  const ctx: DispatchContext = {
+    memory,
+    scratch,
+    structs: new Map(),
+    callbackDefs: new Map(),
+    alloc: (size, _align) => {
+      const ptr = wasmMem.grow(1) * 65536;
+      allocs.push([ptr, size]);
+      return ptr;
+    },
+    free: (ptr, size, _align) => {
+      frees.push([ptr, size]);
+    },
+    installCallback: () => {
+      throw new Error("not used");
+    },
+    useJit: true,
+  };
+  return { wasmMem, memory, ctx, allocs, frees };
+}
+
+const BORROWED_DEF: FunctionDef = {
+  args: [FfiType.ForeignBytes],
+  ret: FfiType.UInt32,
+  hasRustCallStatus: false,
+};
+
+test("ForeignBytes: copies the view's window into wasm memory, and frees it after the call", () => {
+  const { memory, ctx, allocs, frees } = growingContext();
+  let seen: number[] = [];
+  const dispatch = specializeFunction(
+    ctx,
+    (fbPtr: number) => {
+      const fb = readForeignBytes(memory, fbPtr);
+      seen = Array.from(memory.readBytes(fb.dataPtr, fb.len));
+      assert.deepStrictEqual(frees, [], "the copy is live during the call");
+      return fb.len;
+    },
+    BORROWED_DEF,
+  );
+
+  const backing = new Uint8Array([99, 10, 20, 30, 88]);
+  assert.strictEqual(dispatch(backing.subarray(1, 4)), 3);
+  assert.deepStrictEqual(seen, [10, 20, 30]);
+  assert.strictEqual(allocs.length, 1);
+  assert.deepStrictEqual(frees, allocs, "the copy is freed after the call");
+});
+
+test("ForeignBytes: an empty view is (0, null), with no allocation", () => {
+  const { memory, ctx, allocs } = growingContext();
+  let seen: unknown;
+  const dispatch = specializeFunction(
+    ctx,
+    (fbPtr: number) => {
+      seen = readForeignBytes(memory, fbPtr);
+      return 0;
+    },
+    BORROWED_DEF,
+  );
+  dispatch(new Uint8Array([1, 2, 3]).subarray(2, 2));
+  assert.deepStrictEqual(seen, { len: 0, dataPtr: 0 });
+  assert.deepStrictEqual(allocs, []);
+});
+
+test("ForeignBytes: the copy is freed when the call throws", () => {
+  const { ctx, allocs, frees } = growingContext();
+  const dispatch = specializeFunction(
+    ctx,
+    () => {
+      throw new Error("trap");
+    },
+    BORROWED_DEF,
+  );
+  assert.throws(() => dispatch(new Uint8Array([1, 2])), /trap/);
+  assert.strictEqual(allocs.length, 1);
+  assert.deepStrictEqual(frees, allocs);
+});
+
+test("ForeignBytes: a value that is not a Uint8Array is an error", () => {
+  const { ctx } = growingContext();
+  const dispatch = specializeFunction(ctx, () => 0, BORROWED_DEF);
+  assert.throws(() => dispatch(new ArrayBuffer(2)), /must be a Uint8Array/);
+});
+
+test("ForeignBytes: a view over wasm memory is copied before alloc grows memory", () => {
+  const { wasmMem, memory, ctx } = growingContext();
+  new Uint8Array(wasmMem.buffer).set([7, 8, 9], 2000);
+  const inWasm = new Uint8Array(wasmMem.buffer, 2000, 3);
+  let seen: number[] = [];
+  const dispatch = specializeFunction(
+    ctx,
+    (fbPtr: number) => {
+      const fb = readForeignBytes(memory, fbPtr);
+      seen = Array.from(memory.readBytes(fb.dataPtr, fb.len));
+      return 0;
+    },
+    BORROWED_DEF,
+  );
+  dispatch(inWasm);
+  assert.deepStrictEqual(seen, [7, 8, 9]);
+});
+
+test("ForeignBytes: a RustBuffer arg is prepared before alloc grows memory", () => {
+  const { wasmMem, memory, ctx } = growingContext();
+  // A lowered `Vec<u8>` arg is a view over wasm memory, as from `rustbuffer_alloc`.
+  const owned = new Uint8Array(wasmMem.buffer, 1000, 4);
+  owned.set([1, 2, 3, 4]);
+  let seen: unknown;
+  const dispatch = specializeFunction(
+    ctx,
+    (fbPtr: number, rbPtr: number) => {
+      const rb = readRustBuffer(memory, rbPtr);
+      seen = Array.from(memory.readBytes(rb.dataPtr, Number(rb.len)));
+      return 0;
+    },
+    {
+      args: [FfiType.ForeignBytes, FfiType.RustBuffer],
+      ret: FfiType.UInt32,
+      hasRustCallStatus: false,
+    },
+  );
+  dispatch(new Uint8Array([5, 6]), owned);
+  assert.deepStrictEqual(seen, [1, 2, 3, 4]);
 });

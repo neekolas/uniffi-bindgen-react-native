@@ -352,6 +352,144 @@ pub unsafe fn read_typedarray_data(
     Some((data as *const u8, length))
 }
 
+/// A `&[u8]` argument: a JS `Uint8Array` that Rust borrows for one call.
+///
+/// The call uses it in two steps:
+///
+/// 1. [`BorrowedBytes::check`] runs before any other argument is converted, so
+///    a failed check cannot leak an owned `RustBuffer`.
+/// 2. [`BorrowedBytes::foreign_bytes`] reads the pointer after all the
+///    arguments are converted. No JS runs between it and the Rust call, so JS
+///    cannot detach or resize the buffer while Rust holds the pointer.
+///
+/// Conversions between the two steps can run JS. If that JS detaches or
+/// shrinks the buffer, the view no longer holds the checked bytes, and Rust
+/// gets an empty slice. JS also reports `byteLength` 0 for such a view.
+pub enum BorrowedBytes {
+    /// A view over an `ArrayBuffer`. `len` is its length when it was checked.
+    View {
+        value: napi::sys::napi_value,
+        len: usize,
+    },
+    /// A copy of a view over a `SharedArrayBuffer`. Other threads can write to
+    /// shared memory during the call, so Rust borrows this copy instead.
+    Copy(Vec<u8>),
+}
+
+impl BorrowedBytes {
+    /// Check that `raw_val` is a `Uint8Array` that fits a `ForeignBytes`.
+    ///
+    /// # Safety
+    ///
+    /// - `raw_env` must be a valid `napi_env` for the current callback scope.
+    /// - `raw_val` must be a `napi_value` from that scope.
+    pub unsafe fn check(
+        raw_env: napi::sys::napi_env,
+        raw_val: napi::sys::napi_value,
+    ) -> napi::Result<Self> {
+        let info = typedarray_info(raw_env, raw_val)
+            .filter(|info| info.kind == napi::sys::TypedarrayType::uint8_array)
+            .ok_or_else(|| napi::Error::from_reason("A `&[u8]` argument must be a Uint8Array"))?;
+        if info.len > i32::MAX as usize {
+            return Err(napi::Error::from_reason(
+                "A `&[u8]` argument is longer than i32::MAX bytes",
+            ));
+        }
+        let mut is_arraybuffer = false;
+        let status = napi::sys::napi_is_arraybuffer(raw_env, info.arraybuffer, &mut is_arraybuffer);
+        if status != napi::sys::Status::napi_ok {
+            return Err(napi::Error::from_reason(
+                "Could not read the buffer of a `&[u8]` argument",
+            ));
+        }
+        if is_arraybuffer {
+            return Ok(Self::View {
+                value: raw_val,
+                len: info.len,
+            });
+        }
+        // Not an `ArrayBuffer`, so a `SharedArrayBuffer`.
+        let bytes = if info.len > 0 && !info.data.is_null() {
+            // SAFETY: napi gives a pointer to `len` bytes of the view.
+            std::slice::from_raw_parts(info.data, info.len).to_vec()
+        } else {
+            Vec::new()
+        };
+        Ok(Self::Copy(bytes))
+    }
+
+    /// Read the pointer and length for the call. Call this after every other
+    /// argument is converted, and run no JS before the call.
+    ///
+    /// # Safety
+    ///
+    /// `raw_env` must be the env that [`BorrowedBytes::check`] used, in the same
+    /// callback scope.
+    pub unsafe fn foreign_bytes(&self, raw_env: napi::sys::napi_env) -> ForeignBytesC {
+        const EMPTY: ForeignBytesC = ForeignBytesC {
+            len: 0,
+            data: std::ptr::null(),
+        };
+        match self {
+            Self::View { value, len } => match typedarray_info(raw_env, *value) {
+                // A view's `byteOffset` cannot change. If the view still
+                // covers `len` bytes, Rust reads the first `len` of them.
+                Some(info) if *len > 0 && info.len >= *len && !info.data.is_null() => {
+                    ForeignBytesC {
+                        len: *len as i32,
+                        data: info.data,
+                    }
+                }
+                _ => EMPTY,
+            },
+            Self::Copy(bytes) if bytes.is_empty() => EMPTY,
+            Self::Copy(bytes) => ForeignBytesC {
+                len: bytes.len() as i32,
+                data: bytes.as_ptr(),
+            },
+        }
+    }
+}
+
+struct TypedArrayInfo {
+    kind: napi::sys::napi_typedarray_type,
+    len: usize,
+    data: *const u8,
+    arraybuffer: napi::sys::napi_value,
+}
+
+/// `napi_get_typedarray_info`, or `None` if `raw_val` is not a typed array.
+///
+/// # Safety
+///
+/// - `raw_env` must be a valid `napi_env` for the current callback scope.
+/// - `raw_val` must be a `napi_value` from that scope.
+unsafe fn typedarray_info(
+    raw_env: napi::sys::napi_env,
+    raw_val: napi::sys::napi_value,
+) -> Option<TypedArrayInfo> {
+    let mut kind = 0;
+    let mut len = 0;
+    let mut data: *mut c_void = std::ptr::null_mut();
+    let mut arraybuffer = std::ptr::null_mut();
+    let mut byte_offset = 0;
+    let status = napi::sys::napi_get_typedarray_info(
+        raw_env,
+        raw_val,
+        &mut kind,
+        &mut len,
+        &mut data,
+        &mut arraybuffer,
+        &mut byte_offset,
+    );
+    (status == napi::sys::Status::napi_ok).then_some(TypedArrayInfo {
+        kind,
+        len,
+        data: data as *const u8,
+        arraybuffer,
+    })
+}
+
 /// Allocate a [`RustBufferC`] by copying raw bytes through `rustbuffer_from_bytes`.
 ///
 /// This is the shared core of all "bytes -> RustBuffer" conversions in the crate.
