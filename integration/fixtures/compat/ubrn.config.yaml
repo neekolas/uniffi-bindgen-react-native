@@ -1,6 +1,7 @@
 rust:
   repo: https://github.com/jhugman/uniffi-starter.git
-  # A maintainer must push this branch to jhugman/uniffi-starter before this
-  # CI job can pass. The branch pins uniffi 0.32.1.
+  # A maintainer must land https://github.com/jhugman/uniffi-starter/pull/1
+  # as branch `jhugman/bump-uniffi-to-0.32` before this CI job can pass.
+  # That branch pins uniffi 0.32 (lock: 0.32.1).
   branch: jhugman/bump-uniffi-to-0.32
   manifestPath: rust/foobar/Cargo.toml

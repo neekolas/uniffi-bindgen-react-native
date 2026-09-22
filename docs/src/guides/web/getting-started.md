@@ -29,7 +29,7 @@ Also, add the entrypoint for `browser`s:
 
 You can ensure that the bindings get generated specifically for both react-native and the web, by changing the `ubrn.config.yaml` file.
 
-<!-- A maintainer must push jhugman/bump-uniffi-to-0.32 to jhugman/uniffi-starter before this example works. -->
+<!-- A maintainer must land https://github.com/jhugman/uniffi-starter/pull/1 as branch jhugman/bump-uniffi-to-0.32 before this example works. That branch pins uniffi 0.32 (lock: 0.32.1). -->
 ```diff
 rust:
   repo: https://github.com/jhugman/uniffi-starter.git
