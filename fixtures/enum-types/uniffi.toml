@@ -1,2 +1,5 @@
 [bindings.typescript]
 strictTypeChecking = true
+
+[bindings.react-native.rename]
+AnimalTomlRenamed = "AnimalRenamedByToml"

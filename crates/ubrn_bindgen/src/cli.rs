@@ -257,8 +257,13 @@ impl BindgenPathsLayer for ConfigOverrideLayer {
     }
 }
 
-/// For each namespace, the `orig_name` of each enum that declares its
-/// discriminant type (e.g. `#[repr(u8)]`).
+/// For each namespace, the enums that declare their discriminant type
+/// (e.g. `#[repr(u8)]`).
+///
+/// Each enum is keyed by the `canonical_name` of its type in the general IR:
+/// `Type{name}`. uniffi-rs makes it from the name after `#[uniffi(name)]` and
+/// before the uniffi.toml rename, so it is unique in the namespace. The Rust
+/// name (`orig_name`) is not unique: two modules can each have an `enum Color`.
 type ExplicitDiscrEnums = HashMap<String, HashSet<String>>;
 
 fn collect_explicit_discr_enums(root: &initial::Root) -> ExplicitDiscrEnums {
@@ -270,7 +275,7 @@ fn collect_explicit_discr_enums(root: &initial::Root) -> ExplicitDiscrEnums {
                 .iter()
                 .filter_map(|td| match td {
                     initial::TypeDefinition::Enum(e) if e.discr_type.is_some() => {
-                        Some(e.orig_name.clone())
+                        Some(format!("Type{}", e.name))
                     }
                     _ => None,
                 })

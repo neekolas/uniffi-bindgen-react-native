@@ -413,7 +413,8 @@ impl TsApiModule {
                     defs.push(TsTypeDefinition::External(build_external_type(config, ext)));
                 }
                 general::TypeDefinition::Enum(e) => {
-                    let has_explicit_discr = explicit_discr_enums.contains(&e.orig_name);
+                    let has_explicit_discr =
+                        explicit_discr_enums.contains(&e.self_type.canonical_name);
                     let ts_enum = build_enum(config, e, has_explicit_discr, flavor);
                     if ts_enum.is_flat && ts_enum.is_error {
                         defs.push(TsTypeDefinition::FlatError(ts_enum));
