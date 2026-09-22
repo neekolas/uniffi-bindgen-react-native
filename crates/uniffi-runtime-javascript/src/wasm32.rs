@@ -8,7 +8,7 @@ pub use wasm_bindgen::prelude::*;
 
 pub mod uniffi {
     pub use uniffi_core::{
-        RustBuffer, RustCallStatus, RustCallStatusCode, UniffiForeignPointerCell,
+        ForeignBytes, RustBuffer, RustCallStatus, RustCallStatusCode, UniffiForeignPointerCell,
     };
     pub type VoidPointer = *const std::ffi::c_void;
 }
@@ -68,6 +68,17 @@ impl IntoRust<ForeignBytes> for uniffi::RustBuffer {
 impl IntoJs<ForeignBytes> for uniffi::RustBuffer {
     fn into_js(self) -> ForeignBytes {
         self.destroy_into_vec()
+    }
+}
+/// A `&[u8]` argument. wasm-bindgen has already copied the JS bytes into the
+/// `Vec`, and Rust borrows them from there. The `Vec` must live until the
+/// call returns.
+impl IntoRust<&ForeignBytes> for uniffi::ForeignBytes {
+    fn into_rust(v: &ForeignBytes) -> Self {
+        let len = i32::try_from(v.len()).expect("a `&[u8]` argument is longer than i32::MAX");
+        // SAFETY: the pointer and length describe the `Vec`'s bytes, and the
+        // caller keeps the `Vec` alive for the call.
+        unsafe { Self::from_raw_parts(v.as_ptr(), len) }
     }
 }
 

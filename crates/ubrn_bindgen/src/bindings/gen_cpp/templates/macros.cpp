@@ -37,6 +37,37 @@ jsi::Value {{ module_name }}::{% call cpp_func_name(func) %}(jsi::Runtime& rt, c
         {%- endif %}
 
         {#- Now call into Rust #}
+        {%- if func.has_foreign_bytes_args() %}
+        {#- A `&[u8]` argument is a `uniffi_jsi::BorrowedBytes`. Check each one
+            before any other argument is converted, so a failed check cannot
+            leak an owned RustBuffer. Read the pointers in the call itself,
+            after every conversion: no JS runs between `bytes(rt)` and Rust. #}
+        {%-   for arg in func.arguments() %}
+        {%-     if arg.type_().is_foreign_bytes() %}
+        auto arg{{ loop.index0 }} = {% call arg_from_js(arg, loop.index0) %};
+        {%-     endif %}
+        {%-   endfor %}
+        {%-   for arg in func.arguments() %}
+        {%-     if !arg.type_().is_foreign_bytes() %}
+        auto arg{{ loop.index0 }} = {% call arg_from_js(arg, loop.index0) %};
+        {%-     endif %}
+        {%-   endfor %}
+        {% if func.return_type().is_some() -%}
+        auto value = {# space #}
+        {%- endif %}
+        {{- func_name }}(
+            {%- for arg in func.arguments() %}
+            arg{{ loop.index0 }}
+            {%-   if arg.type_().is_foreign_bytes() %}.bytes(rt){% endif %}
+            {%-   if !loop.last %}, {# space #}
+            {%-   endif %}
+            {%- endfor %}
+            {%- if func.has_rust_call_status_arg() %}
+            {%-   if !func.arguments().is_empty() %}, {# space #}
+            {%   endif %}&status
+            {%- endif %}
+        );
+        {%- else %}
         {% if func.return_type().is_some() -%}
         auto value = {# space #}
         {%- endif %}
@@ -51,6 +82,7 @@ jsi::Value {{ module_name }}::{% call cpp_func_name(func) %}(jsi::Runtime& rt, c
             {%   endif %}&status
             {%- endif %}
         );
+        {%- endif %}
 
         {#- Now copy the call status into JS. #}
         {%- if func.has_rust_call_status_arg() %}

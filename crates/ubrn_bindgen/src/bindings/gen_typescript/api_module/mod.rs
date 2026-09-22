@@ -653,7 +653,7 @@ fn force_async_error_block(kind: &str, name: &str, methods: &[TsCallable]) -> Op
 /// error leaves no partial output.
 pub(crate) fn reject_unsupported(namespace: &general::Namespace) -> anyhow::Result<()> {
     reject_unsupported_types(namespace)?;
-    reject_borrowed_bytes(namespace)
+    reject_async_borrowed_bytes(namespace)
 }
 
 /// uniffi-rs 0.32 added `Box<T>` and `HashSet<T>`. The generators do not
@@ -678,13 +678,15 @@ fn reject_unsupported_types(namespace: &general::Namespace) -> anyhow::Result<()
     Ok(())
 }
 
-/// uniffi-rs 0.32 passes a `&[u8]` or UDL `[ByRef] bytes` argument as
-/// `ForeignBytes` (pointer and length), not as a `RustBuffer`. The generators
-/// do not write that ABI yet, so the generated code would not work.
+/// Rust borrows a `&[u8]` or UDL `[ByRef] bytes` argument as `ForeignBytes`
+/// (pointer and length). The pointer is valid only until the call returns.
 ///
-/// A later PR in the uniffi 0.32 stack adds `ForeignBytes` on all four
-/// flavours, and removes this check.
-fn reject_borrowed_bytes(namespace: &general::Namespace) -> anyhow::Result<()> {
+/// uniffi-rs 0.32 does not compile an `async fn` with such an argument on
+/// native targets. On wasm32 with `wasm-unstable-single-threaded` it does
+/// compile, but the Rust future reads the bytes after the call that started it
+/// has returned. By then the bindings have freed their copy of the bytes, so
+/// the future would read freed memory. This check stops that.
+fn reject_async_borrowed_bytes(namespace: &general::Namespace) -> anyhow::Result<()> {
     let mut callables: Vec<(String, &general::Callable)> = namespace
         .functions
         .iter()
@@ -695,7 +697,6 @@ fn reject_borrowed_bytes(namespace: &general::Namespace) -> anyhow::Result<()> {
             general::TypeDefinition::Interface(i) => (&i.name, &i.constructors, &i.methods),
             general::TypeDefinition::Record(r) => (&r.name, &r.constructors, &r.methods),
             general::TypeDefinition::Enum(e) => (&e.name, &e.constructors, &e.methods),
-            general::TypeDefinition::CallbackInterface(c) => (&c.name, &[], &c.methods),
             _ => continue,
         };
         callables.extend(constructors.iter().map(|c| {
@@ -708,15 +709,74 @@ fn reject_borrowed_bytes(namespace: &general::Namespace) -> anyhow::Result<()> {
         }));
     }
     for (what, callable) in callables {
-        if callable.arguments.iter().any(|a| a.is_borrowed_bytes()) {
+        if callable.async_data.is_some() && callable.arguments.iter().any(|a| a.is_borrowed_bytes())
+        {
             anyhow::bail!(
-                "`&[u8]` / `[ByRef] bytes` arguments are not yet supported by \
-                uniffi-bindgen-react-native ({what} in namespace `{}`)",
+                "an async {what} in namespace `{}` takes a `&[u8]` / `[ByRef] bytes` \
+                argument. uniffi-bindgen-react-native does not support this: on wasm32 \
+                the Rust future reads the bytes after the call that passed them has \
+                returned, when the memory is already freed. Use an owned `Vec<u8>` \
+                argument instead.",
                 namespace.name,
             );
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod borrowed_bytes_tests {
+    use super::*;
+    use uniffi_bindgen::pipeline::initial::UniffiMetaConverter;
+    use uniffi_meta::{FnMetadata, FnParamMetadata, Metadata, NamespaceMetadata, Type};
+
+    /// Runs one exported function through the same pipeline that `cli.rs`
+    /// uses, then through `reject_unsupported`.
+    fn check_function(is_async: bool, ty: Type, by_ref: bool) -> anyhow::Result<()> {
+        let mut converter = UniffiMetaConverter::default();
+        converter.add_metadata_item(Metadata::Namespace(NamespaceMetadata {
+            crate_name: "bytes_crate".into(),
+            name: "bytes_crate".into(),
+        }))?;
+        converter.add_metadata_item(Metadata::Func(FnMetadata {
+            module_path: "bytes_crate".into(),
+            name: "take_bytes".into(),
+            orig_name: None,
+            is_async,
+            inputs: vec![FnParamMetadata {
+                name: "bytes".into(),
+                ty,
+                by_ref,
+                optional: false,
+                default: None,
+            }],
+            return_type: None,
+            throws: None,
+            checksum: Some(0),
+            docstring: None,
+        }))?;
+        let root = general::pipeline("react-native").execute(converter.try_into_initial_ir()?)?;
+        reject_unsupported(&root.namespaces["bytes_crate"])
+    }
+
+    #[test]
+    fn async_borrowed_bytes_is_an_error() {
+        let err = check_function(true, Type::Bytes, true)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("function `take_bytes`"), "message: {err}");
+        assert!(err.contains("on wasm32"), "message: {err}");
+    }
+
+    #[test]
+    fn sync_borrowed_bytes_is_ok() {
+        check_function(false, Type::Bytes, true).unwrap();
+    }
+
+    #[test]
+    fn async_owned_bytes_is_ok() {
+        check_function(true, Type::Bytes, false).unwrap();
+    }
 }
 
 #[cfg(test)]

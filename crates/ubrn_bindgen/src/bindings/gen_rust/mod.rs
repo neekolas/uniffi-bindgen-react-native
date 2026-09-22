@@ -670,7 +670,13 @@ impl<'a> ComponentTemplate<'a> {
 
     fn convert_to_rust(&self, ident: Ident, type_: &FfiType) -> TokenStream {
         let rust_type = self.ffi_type_rust(type_);
-        quote! { #rust_type::into_rust(#ident), }
+        if matches!(type_, FfiType::ForeignBytes) {
+            // Rust borrows the bytes, so point into the `Vec<u8>` argument.
+            // It lives until the generated function returns.
+            quote! { #rust_type::into_rust(&#ident), }
+        } else {
+            quote! { #rust_type::into_rust(#ident), }
+        }
     }
 
     fn convert_to_js(&self, ident: Ident) -> TokenStream {
@@ -782,7 +788,7 @@ impl<'a> ComponentTemplate<'a> {
             FfiType::Float32 => quote! { f32 },
             FfiType::Float64 => quote! { f64 },
             FfiType::Handle => quote! { u64 },
-            FfiType::ForeignBytes => quote! { #uniffi::RustBuffer },
+            FfiType::ForeignBytes => quote! { #uniffi::ForeignBytes },
             FfiType::RustBuffer(_) => quote! { #uniffi::RustBuffer },
             FfiType::RustCallStatus => quote! { #uniffi::RustCallStatus },
             FfiType::VoidPointer => quote! { #uniffi::VoidPointer },
@@ -912,6 +918,45 @@ mod unit_tests {
         assert_eq!(
             string.trim(),
             "fn happy_path_func (status_ : & mut u :: RustCallStatus) -> i8 ;"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn borrowed_bytes_arg() -> Result<()> {
+        let mut subject = subject();
+
+        let input = func(
+            "borrowed_bytes_func",
+            vec![arg("bytes", FfiType::ForeignBytes)].into_iter(),
+            return_(FfiType::UInt32),
+        );
+        let output = subject.ffi_function(&input);
+        let string = formatted(output, true)?;
+        assert_eq!(
+            string.trim(),
+            trim_indent(
+                "
+            #[wasm_bindgen]
+            pub fn ubrn_borrowed_bytes_func(
+                bytes: js::ForeignBytes,
+                f_status_: &mut js::RustCallStatus,
+            ) -> js::UInt32 {
+                let mut u_status_ = u::RustCallStatus::default();
+                let value_ = unsafe {
+                    borrowed_bytes_func(u::ForeignBytes::into_rust(&bytes), &mut u_status_)
+                };
+                f_status_.copy_from(u_status_);
+                value_.into_js()
+            }"
+            )
+        );
+
+        let output = subject.ffi_function_decl_c_abi(&input);
+        let string = formatted(output, false)?;
+        assert_eq!(
+            string.trim(),
+            "fn borrowed_bytes_func (bytes : u :: ForeignBytes , status_ : & mut u :: RustCallStatus) -> u32 ;"
         );
         Ok(())
     }

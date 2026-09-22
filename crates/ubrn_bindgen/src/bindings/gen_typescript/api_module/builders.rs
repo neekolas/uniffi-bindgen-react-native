@@ -428,6 +428,7 @@ pub(super) fn build_arg(config: &Config, arg: &general::Argument) -> TsArg {
         name: arg_name(&arg.name),
         ts_type,
         ffi_converter: ffi_converter_name_for(config, &arg.ty),
+        is_borrowed_bytes: arg.is_borrowed_bytes(),
         default_value: arg
             .default
             .as_ref()
@@ -454,7 +455,9 @@ pub(super) fn build_callable(
     let return_type = callable.return_type.ty.as_ref().map(|tn| {
         let ts_type = type_label_for(config, &tn.ty);
         let ffi_type = ffi_type_to_ts_name(&tn.ffi_type);
-        let is_rust_buffer = ffi_type == "Uint8Array";
+        // Match the FFI type, not its TS name: `ForeignBytes` is also a
+        // `Uint8Array` in TS.
+        let is_rust_buffer = matches!(tn.ffi_type, general::FfiType::RustBuffer(_));
         TsReturnType {
             ts_type,
             ffi_converter: ffi_converter_name_for(config, tn),

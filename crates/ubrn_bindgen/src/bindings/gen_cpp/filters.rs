@@ -131,6 +131,8 @@ pub fn bridging_namespace(
         | FfiType::RustCallStatus
         | FfiType::Callback(_)
         | FfiType::Struct(_) => ci.cpp_namespace(),
+        // `Bridging<ForeignBytes>` is written by hand in `ForeignBytes.h`.
+        FfiType::ForeignBytes => ci.cpp_namespace_includes(),
         FfiType::MutReference(inner) | FfiType::Reference(inner) => bridging_namespace(inner, ci)?,
         _ => ffi_type.cpp_namespace(ci),
     })

@@ -12,7 +12,6 @@ pub(crate) use crate::bindings::gen_typescript::type_mapping::ffi_type_to_ts;
 pub(super) fn ffi_type_to_ts_native(ffi_type: &general::FfiType) -> String {
     match ffi_type {
         general::FfiType::Handle(_) => "UniffiGcObject".into(),
-        general::FfiType::ForeignBytes => "Uint8Array".into(),
         general::FfiType::RustBuffer(_) => "string".into(),
         _ => ffi_type_to_ts(ffi_type),
     }

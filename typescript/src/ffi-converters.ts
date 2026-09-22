@@ -301,6 +301,13 @@ export class FfiConverterMap<K, V> extends AbstractFfiConverterByteArray<
 
 export const FfiConverterArrayBuffer = (() => {
   class FFIConverter extends AbstractFfiConverterByteArray<ArrayBuffer> {
+    /**
+     * Lower a `&[u8]` argument. Rust borrows the bytes for the length of the
+     * call, so this makes a view over the same memory and does not copy.
+     */
+    lowerBorrowed(value: ArrayBuffer): Uint8Array {
+      return new Uint8Array(value);
+    }
     readFromCursor(c: Cursor): ArrayBuffer {
       const length = c.readI32();
       return c.readArrayBuffer(length);
@@ -318,6 +325,14 @@ export const FfiConverterArrayBuffer = (() => {
 
 export const FfiConverterUint8Array = (() => {
   class FFIConverter extends AbstractFfiConverterByteArray<Uint8Array> {
+    /**
+     * Lower a `&[u8]` argument. Rust borrows the bytes for the length of the
+     * call, so this gives the same view, with its `byteOffset`, and does not
+     * copy.
+     */
+    lowerBorrowed(value: Uint8Array): Uint8Array {
+      return value;
+    }
     readFromCursor(c: Cursor): Uint8Array {
       const length = c.readI32();
       return c.readBytes(length);
