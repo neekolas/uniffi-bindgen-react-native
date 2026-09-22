@@ -19,7 +19,7 @@ The `web` flavor puts the wasm-specific requirements in the crate it generates f
 
 + [target.'cfg(target_arch = "wasm32")'.dependencies]
 + uniffi-runtime-wasm = "0.31.0-3"
-+ uniffi_core = { version = "0.31", features = ["wasm-unstable-single-threaded"] }
++ uniffi_core = { version = "0.32", features = ["wasm-unstable-single-threaded"] }
 ```
 
 ```diff

@@ -131,7 +131,7 @@ For now, we just want to get started; let's start with an existing Rust crate th
 ---
 rust:
   repo: https://github.com/jhugman/uniffi-starter.git
-  branch: jhugman/bump-uniffi-to-0.31
+  branch: jhugman/bump-uniffi-to-0.32
   manifestPath: rust/foobar/Cargo.toml
 ```
 

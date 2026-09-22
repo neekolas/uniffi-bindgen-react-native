@@ -32,7 +32,7 @@ You can ensure that the bindings get generated specifically for both react-nativ
 ```diff
 rust:
   repo: https://github.com/jhugman/uniffi-starter.git
-  branch: jhugman/bump-uniffi-to-0.31
+  branch: jhugman/bump-uniffi-to-0.32
   manifestPath: rust/foobar/Cargo.toml
 + web:
 +   ts: src/generated/web

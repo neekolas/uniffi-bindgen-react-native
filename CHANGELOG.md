@@ -7,11 +7,14 @@
 
 ## 🦊 What's Changed
 
+- Bump `uniffi-rs` to [0.32.1](https://github.com/mozilla/uniffi-rs/blob/main/CHANGELOG.md). The new `Box<T>` and `HashSet<T>` types are not supported yet: generation stops with an error that names the type. The `--config` option still takes a flat `uniffi.toml` file. The global config format of uniffi-rs 0.32 is not supported yet.
 - `wasm-bindgen` runs as a command again, at whatever version your project provides, and this workspace pins none of its own. 0.31.0-5 linked `wasm-bindgen-cli-support` and ran the rewrite in-process, which made our pin a third party to an agreement between your crate and its dependencies: `js-sys` and `web-sys` pin `wasm-bindgen` exactly, so a lock file moving — a `matrix-rust-sdk` bump raising its `web-sys` floor, carrying `wasm-bindgen` from 0.2.114 to 0.2.127 with it — could not build until we released a matching version. Both the `web` and `wasm2` flavors shell out now. When the binary is missing or refuses, the version read out of the module's own descriptor section names the one to install, which beats wasm-bindgen's schema-mismatch text; `UBRN_WASM_BINDGEN` points at a specific binary on a machine carrying several ([#454](https://github.com/jhugman/uniffi-bindgen-react-native/pull/454)).
 - `web.wasmBindgenExtras` in `ubrn.config.yaml` reaches `wasm-bindgen` verbatim. The in-process path had to map each flag onto a `Bindgen` method and failed the build on any it did not know; every flag the installed binary accepts now works ([#454](https://github.com/jhugman/uniffi-bindgen-react-native/pull/454)).
 
 ## ⚠️ Breaking Changes
 
+- uniffi 0.32 changes the FFI, so bindings generated for 0.31.x do not work with a library built with 0.32.x. Regenerate your bindings after upgrading.
+- From uniffi-rs 0.32: an `async fn` that takes a `&[u8]` argument no longer compiles on native targets. UDL `[ByRef] bytes` arguments are now `&[u8]` in Rust, not `&Vec<u8>`. See the [uniffi-rs changelog](https://github.com/mozilla/uniffi-rs/blob/main/CHANGELOG.md).
 - Building the `web` flavor needs `wasm-bindgen` on `PATH` again, at the version your `Cargo.lock` resolves for the `wasm-bindgen` crate: `cargo install wasm-bindgen-cli --version <that version>`. If you dropped that install after 0.31.0-5, put it back. `wasm2` needs the command only when your crate's dependency tree reaches `wasm-bindgen` — `js-sys`, `web-sys`, `getrandom`'s wasm backend, an HTTP client — and says so, with the version, if it is missing ([#454](https://github.com/jhugman/uniffi-bindgen-react-native/pull/454)).
 
 **Full Changelog**: https://github.com/jhugman/uniffi-bindgen-react-native/compare/0.31.0-5...main

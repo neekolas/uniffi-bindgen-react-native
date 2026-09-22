@@ -93,6 +93,9 @@ pub(super) fn type_label_for(config: &Config, ty: &general::Type) -> String {
         general::Type::Sequence { inner_type } => {
             format!("Array<{}>", type_label_for(config, inner_type))
         }
+        general::Type::Box { .. } | general::Type::Set { .. } => {
+            unreachable!("Box and Set are rejected in TsApiModule::from_general")
+        }
         general::Type::Map {
             key_type,
             value_type,

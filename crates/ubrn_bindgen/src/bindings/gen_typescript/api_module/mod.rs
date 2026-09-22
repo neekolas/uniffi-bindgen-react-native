@@ -15,7 +15,7 @@ mod docstring;
 mod nodes;
 mod type_helpers;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use heck::ToUpperCamelCase;
 use uniffi_bindgen::pipeline::general;
@@ -353,6 +353,7 @@ impl TsApiModule {
     fn build_type_definitions(
         config: &Config,
         namespace: &general::Namespace,
+        explicit_discr_enums: &HashSet<String>,
         flavor: &AbiFlavor,
     ) -> Vec<TsTypeDefinition> {
         let mut defs = Vec::new();
@@ -389,6 +390,9 @@ impl TsApiModule {
                     deferred_wrappers
                         .push(TsTypeDefinition::SimpleWrapper(build_sequence(config, seq)));
                 }
+                general::TypeDefinition::Box(_) | general::TypeDefinition::Set(_) => {
+                    unreachable!("Box and Set are rejected in TsApiModule::from_general")
+                }
                 general::TypeDefinition::Map(map) => {
                     deferred_wrappers.push(TsTypeDefinition::SimpleWrapper(build_map(config, map)));
                 }
@@ -409,7 +413,8 @@ impl TsApiModule {
                     defs.push(TsTypeDefinition::External(build_external_type(config, ext)));
                 }
                 general::TypeDefinition::Enum(e) => {
-                    let ts_enum = build_enum(config, e, flavor);
+                    let has_explicit_discr = explicit_discr_enums.contains(&e.orig_name);
+                    let ts_enum = build_enum(config, e, has_explicit_discr, flavor);
                     if ts_enum.is_flat && ts_enum.is_error {
                         defs.push(TsTypeDefinition::FlatError(ts_enum));
                     } else if ts_enum.is_flat {
@@ -492,11 +497,14 @@ impl TsApiModule {
         namespace: &general::Namespace,
         flavor: AbiFlavor,
         ffi_exported_definitions: Vec<ffi_module::FfiExportedName>,
+        explicit_discr_enums: &HashSet<String>,
     ) -> anyhow::Result<Self> {
+        reject_unsupported_types(namespace)?;
         let module_name = namespace.name.clone();
         let namespace_docstring = namespace.docstring.as_deref().map(format_docstring);
         let supports_rust_backtrace = flavor.supports_rust_backtrace();
-        let type_definitions = Self::build_type_definitions(config, namespace, &flavor);
+        let type_definitions =
+            Self::build_type_definitions(config, namespace, explicit_discr_enums, &flavor);
         let functions = build_functions(config, namespace, &flavor);
         let initialization = build_initialization(namespace, &flavor);
 
@@ -635,6 +643,29 @@ fn force_async_error_block(kind: &str, name: &str, methods: &[TsCallable]) -> Op
          A {kind} can only be forced async if every method is already async in Rust.\n\
          Mark them `async fn` in the Rust trait, or remove `{name}` from forceAsync."
     ))
+}
+
+/// Returns an error if the namespace uses a type that this generator cannot
+/// write yet.
+///
+/// uniffi-rs 0.32 added `Box<T>` and `HashSet<T>`. The TypeScript generator
+/// does not support them yet. The general pipeline adds a type definition for
+/// each type that the API uses, so one check here covers all uses.
+fn reject_unsupported_types(namespace: &general::Namespace) -> anyhow::Result<()> {
+    for td in &namespace.type_definitions {
+        let (kind, self_type) = match td {
+            general::TypeDefinition::Box(b) => ("Box", &b.self_type),
+            general::TypeDefinition::Set(s) => ("HashSet", &s.self_type),
+            _ => continue,
+        };
+        anyhow::bail!(
+            "`{kind}` is not yet supported by uniffi-bindgen-react-native \
+            (type `{}` in namespace `{}`)",
+            self_type.canonical_name,
+            namespace.name,
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
