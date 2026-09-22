@@ -228,6 +228,8 @@ impl BindingsArgs {
         let cargo_metadata = CrateMetadata::cargo_metadata(manifest_path)?;
         let config_supplier = CrateConfigSupplier::from(cargo_metadata);
         bindgen_paths.add_layer(config_supplier);
+        // The uniffi-rs 0.32 global config format is not read yet: `--config`
+        // takes a flat uniffi.toml, as before.
         Ok(BindgenLoader::new(bindgen_paths, GlobalConfig::default()))
     }
 

@@ -1,4 +1,6 @@
 rust:
   repo: https://github.com/jhugman/uniffi-starter.git
+  # A maintainer must push this branch to jhugman/uniffi-starter before
+  # scripts/test-turbo-modules.sh can use this file. It pins uniffi 0.32.1.
   branch: jhugman/bump-uniffi-to-0.32
   manifestPath: rust/foobar/Cargo.toml
