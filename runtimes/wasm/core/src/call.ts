@@ -6,10 +6,12 @@
 import type { Memory } from "./memory.js";
 import type { Scratch } from "./scratch.js";
 import {
+  FOREIGN_BYTES_SIZE,
   RUST_CALL_STATUS_SIZE,
   RUST_BUFFER_SIZE,
   RCS_ERROR_BUF_OFF,
   readRustBuffer,
+  writeForeignBytes,
   writeRustBufferPayload,
   writeRustCallStatusZero,
   type RustBufferLike,
@@ -58,8 +60,22 @@ interface ScratchSlot {
 
 interface ArgPlan extends ScratchSlot {
   // What the dispatcher does at call-time per arg. Returns the wasm-arg int
-  // (pointer or scalar).
-  prepare: (ctx: DispatchContext, base: number, jsArg: any) => number;
+  // (pointer or scalar). An arg that allocates wasm memory for the call only
+  // pushes a function to `cleanups` that frees it; the dispatcher calls it
+  // after the call, also when the call throws.
+  prepare: (
+    ctx: DispatchContext,
+    base: number,
+    jsArg: any,
+    cleanups: Array<() => void>,
+  ) => number;
+  // True if `prepare` can call `ctx.alloc`. That can grow wasm memory, which
+  // detaches every view over the old memory, such as a lowered `RustBuffer`
+  // arg. So the dispatcher prepares these args after all the others.
+  allocates?: boolean;
+  // Runs for this arg before any arg is prepared, so before any `alloc`.
+  // Returns the value to give to `prepare`.
+  beforeAlloc?: (ctx: DispatchContext, jsArg: any) => any;
 }
 
 interface RetSlot extends ScratchSlot {
@@ -75,12 +91,23 @@ const RUST_BUFFER_SLOT: ScratchSlot = {
   scratchSize: RUST_BUFFER_SIZE,
   scratchAlign: 8,
 };
+const FOREIGN_BYTES_SLOT: ScratchSlot = {
+  scratchSize: FOREIGN_BYTES_SIZE,
+  scratchAlign: 4,
+};
 
-/** Scratch a lowered arg needs. Only `RustBuffer` takes a slot; everything
- * else — scalars, callback table indices, and the persistently-allocated
- * `Reference(Struct)` — passes by value. */
+/** Scratch a lowered arg needs. `RustBuffer` and `ForeignBytes` are structs
+ * that take a slot; everything else — scalars, callback table indices, and
+ * the persistently-allocated `Reference(Struct)` — passes by value. */
 function argSlot(t: FfiTypeDesc): ScratchSlot {
-  return t.tag === "RustBuffer" ? RUST_BUFFER_SLOT : SCALAR_SLOT;
+  switch (t.tag) {
+    case "RustBuffer":
+      return RUST_BUFFER_SLOT;
+    case "ForeignBytes":
+      return FOREIGN_BYTES_SLOT;
+    default:
+      return SCALAR_SLOT;
+  }
 }
 
 /** Scratch a return value needs. `RustBuffer` returns come back through an
@@ -90,6 +117,8 @@ function retSlot(t: FfiTypeDesc): RetSlot {
     ? { hasSret: true, ...RUST_BUFFER_SLOT }
     : { hasSret: false, ...SCALAR_SLOT };
 }
+
+const I32_MAX = 0x7fffffff;
 
 const align = (off: number, a: number) => (off + (a - 1)) & ~(a - 1);
 
@@ -140,6 +169,48 @@ function planArg(t: FfiTypeDesc): ArgPlan {
           return base;
         },
       };
+    case "ForeignBytes":
+      // A `&[u8]` arg. Rust reads `{ len: i32, data: *const u8 }`, which
+      // wasm32 passes by pointer: write it into the scratch slot and pass the
+      // slot's address. Codegen gives us the caller's `Uint8Array`, and only
+      // its `byteOffset .. byteOffset + byteLength` window is the argument.
+      //
+      // Rust cannot read JS memory, so copy the bytes into wasm memory. Rust
+      // only borrows them, so the copy is freed after the call.
+      return {
+        ...argSlot(t),
+        allocates: true,
+        // Check the value, and copy a view over wasm memory to the JS heap.
+        // This runs for every arg before the first `alloc`: an `alloc` can
+        // grow wasm memory, and that detaches every view over wasm memory,
+        // also the view of a later arg. Known limit: an owned arg lowered with
+        // `rustbuffer_alloc` before dispatch can already have detached the
+        // view (see docs/src/idioms/common-types.md, "Borrowed byte arrays").
+        beforeAlloc: (ctx, v: Uint8Array) => {
+          if (!(v instanceof Uint8Array)) {
+            throw new Error(
+              `A \`&[u8]\` argument must be a Uint8Array, got ${Object.prototype.toString.call(v)}`,
+            );
+          }
+          if (v.byteLength > I32_MAX) {
+            throw new Error("A `&[u8]` argument is longer than i32::MAX bytes");
+          }
+          return v.buffer === ctx.memory.buffer() ? v.slice() : v;
+        },
+        prepare: (ctx, base, src: Uint8Array, cleanups) => {
+          // A detached view has `byteLength` 0, so Rust gets an empty slice.
+          const len = src.byteLength;
+          let dataPtr = 0;
+          if (len > 0) {
+            const ptr = ctx.alloc(len, 1);
+            cleanups.push(() => ctx.free(ptr, len, 1));
+            ctx.memory.writeBytes(ptr, src);
+            dataPtr = ptr;
+          }
+          writeForeignBytes(ctx.memory, base, { len, dataPtr });
+          return base;
+        },
+      };
     case "Callback": {
       const name = t.name;
       return {
@@ -167,6 +238,7 @@ function planArg(t: FfiTypeDesc): ArgPlan {
       const structName = t.inner.name;
       return {
         ...argSlot(t),
+        allocates: true,
         prepare: (ctx, _base, value: Record<string, unknown>) => {
           const layout = ctx.structs.get(structName);
           if (!layout) {
@@ -328,7 +400,8 @@ function computeAndReserveLayout(
 /**
  * Interpreted dispatcher: reserve scratch once, then per call write each arg
  * via its `prepare` closure, call `exportFn`, check the status inline, and
- * return `retPlan.finish`.
+ * return `retPlan.finish`. Then free the memory that the args allocated for
+ * this call only.
  *
  * Every call shares the one register-time scratch reservation, so an export
  * that re-enters itself synchronously corrupts the outer call. See
@@ -347,22 +420,46 @@ function buildInterpretedDispatcher(
     argPlans,
     retPlan,
   );
+  // The order to prepare the args in: the ones that can grow wasm memory last.
+  const argIndexes = argPlans.map((_, i) => i);
+  const beforeAllocIndexes = argIndexes.filter((i) => argPlans[i].beforeAlloc);
+  const prepareOrder = [
+    ...argIndexes.filter((i) => !argPlans[i].allocates),
+    ...argIndexes.filter((i) => argPlans[i].allocates),
+  ];
 
   return function dispatch(...jsArgs: any[]) {
     // Last JS arg is the status object iff hasRustCallStatus.
     const userArgs = def.hasRustCallStatus ? jsArgs.slice(0, -1) : jsArgs;
     const statusObj = def.hasRustCallStatus ? jsArgs[jsArgs.length - 1] : null;
+    const cleanups: Array<() => void> = [];
+    try {
+      return dispatchWith(userArgs, statusObj, cleanups);
+    } finally {
+      for (const cleanup of cleanups) cleanup();
+    }
+  };
 
+  function dispatchWith(
+    userArgs: any[],
+    statusObj: any,
+    cleanups: Array<() => void>,
+  ) {
     if (def.hasRustCallStatus)
       writeRustCallStatusZero(ctx.memory, base + statusOff);
 
+    const argValues = userArgs.slice();
+    for (const i of beforeAllocIndexes) {
+      argValues[i] = argPlans[i].beforeAlloc!(ctx, argValues[i]);
+    }
+    const argWords: any[] = new Array(argPlans.length);
+    for (const i of prepareOrder) {
+      const argBase = argOffsets[i] >= 0 ? base + argOffsets[i] : 0;
+      argWords[i] = argPlans[i].prepare(ctx, argBase, argValues[i], cleanups);
+    }
     const wasmArgs: any[] = [];
     if (retPlan.hasSret) wasmArgs.push(base + sretOff);
-    for (let i = 0; i < argPlans.length; i++) {
-      const p = argPlans[i];
-      const argBase = argOffsets[i] >= 0 ? base + argOffsets[i] : 0;
-      wasmArgs.push(p.prepare(ctx, argBase, userArgs[i]));
-    }
+    wasmArgs.push(...argWords);
     if (def.hasRustCallStatus) wasmArgs.push(base + statusOff);
 
     const scalarRet = (exportFn as any)(...wasmArgs);
@@ -387,7 +484,7 @@ function buildInterpretedDispatcher(
       }
     }
     return retPlan.finish(ctx, base + sretOff, scalarRet);
-  };
+  }
 }
 
 /**
@@ -418,6 +515,8 @@ function isSimpleRetType(t: FfiTypeDesc): boolean {
 /**
  * Tags that the JIT dispatcher knows how to emit inline as arg types.
  * Restricted to scalars and `RustBuffer` — excludes `Void` (return-only).
+ * `ForeignBytes` is not in the set: its copy must be freed after the call,
+ * and only the interpreted path does that.
  * Anything outside this set returns `undefined` from `buildJitDispatcher`,
  * causing `specializeFunction` to fall back to the interpreted path.
  */

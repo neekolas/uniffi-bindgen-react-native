@@ -178,6 +178,9 @@ pub(crate) struct TsArg {
     pub name: String,
     pub ts_type: String,
     pub ffi_converter: String,
+    /// True for a `&[u8]` or UDL `[ByRef] bytes` argument. Rust borrows it as
+    /// `ForeignBytes`, so the call lowers it with `lowerBorrowed`, not `lower`.
+    pub is_borrowed_bytes: bool,
     pub default_value: Option<String>,
 }
 

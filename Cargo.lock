@@ -2023,6 +2023,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "uniffi-fixture-array-buffers"
+version = "0.22.0"
+dependencies = [
+ "ubrn_fixture_testing",
+ "ubrn_macros",
+ "uniffi",
+ "uniffi-runtime-wasm",
+ "uniffi_core",
+]
+
+[[package]]
 name = "uniffi-fixture-async-callbacks"
 version = "0.21.0"
 dependencies = [

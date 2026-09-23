@@ -138,6 +138,8 @@ Take `scan_receipt(image: Vec<u8>) -> Result<Receipt, ScanError>`, whose FFI sig
 
 Ownership, stated once: bytes going *into* Rust are Rust's, because the payload is allocated by the same global allocator Rust uses for `Vec<u8>`, so `Vec::from_raw_parts` reclaims it and the player must not. Bytes coming *out* are the caller's to free, through the view handed to it. Where Rust over-allocated — capacity above length — the true capacity rides on the view as a symbol-keyed property, because the allocator's `Layout` contract needs the size it was given.
 
+A `&[u8]` argument is different: its FFI type is `ForeignBytes`, a length and a pointer that Rust only borrows for the call. The player copies the view's bytes into a new wasm allocation, writes the 8-byte `ForeignBytes` struct into the argument slot, and frees the copy after the call, also when the call throws. Because that allocation can grow wasm memory, and a grow detaches every view over the old memory, the dispatcher first copies every `&[u8]` view over wasm memory to the JavaScript heap, then prepares the arguments that allocate after all the others. This cannot help with an allocation that happens before the dispatcher runs: the generated code lowers an owned argument with `rustbuffer_alloc` first, and that can already have detached a `&[u8]` view over wasm memory. Then Rust gets an empty slice. Callers should pass a copy instead of such a view.
+
 ## Callbacks: shapes and trampolines
 
 Rust can only call a wasm function, so for every JavaScript closure the player emits one.

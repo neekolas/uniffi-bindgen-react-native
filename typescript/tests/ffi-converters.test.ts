@@ -7,6 +7,7 @@ import { Cursor } from "../src/cursor";
 import {
   FfiConverter,
   FfiConverterArray,
+  FfiConverterArrayBuffer,
   AbstractFfiConverterByteArray,
   FfiConverterBool,
   FfiConverterInt16,
@@ -50,6 +51,28 @@ function testConverter<T>(
   const output = converter.lift(lowered);
   t.assertEqual(input, output, "Round trip failed");
 }
+
+test("lowerBorrowed keeps a Uint8Array view, with its offset", (t) => {
+  const backing = new Uint8Array([99, 10, 20, 88]);
+  const view = backing.subarray(1, 3);
+  const lowered = FfiConverterUint8Array.lowerBorrowed(view);
+  t.assertTrue(lowered === view);
+  t.assertTrue(lowered.buffer === backing.buffer);
+  t.assertEqual(lowered.byteOffset, 1);
+  t.assertEqual(lowered.byteLength, 2);
+});
+
+test("lowerBorrowed makes a view over an ArrayBuffer, with no copy", (t) => {
+  const backing = new Uint8Array([10, 20]).buffer;
+  const lowered = FfiConverterArrayBuffer.lowerBorrowed(backing);
+  t.assertTrue(lowered.buffer === backing);
+  t.assertEqual(lowered.byteOffset, 0);
+  t.assertEqual(lowered.byteLength, 2);
+  t.assertEqual(
+    FfiConverterArrayBuffer.lowerBorrowed(new ArrayBuffer(0)).byteLength,
+    0,
+  );
+});
 
 test("1 byte converter", (t) => {
   const converter = new TestConverter(FfiConverterInt8);

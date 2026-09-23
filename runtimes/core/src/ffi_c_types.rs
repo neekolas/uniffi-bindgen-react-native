@@ -15,7 +15,8 @@
 //! - [`RustBufferC`]: The **owned** byte buffer—`{ capacity: u64, len: u64, data: *mut u8 }`.
 //!   UniFFI uses this for passing serialized compound types across the boundary.
 //! - [`ForeignBytesC`]: A **borrowed** byte view—`{ len: i32, data: *const u8 }`.
-//!   Used only in `rustbuffer_from_bytes` to hand owned-by-JS bytes to Rust without copying.
+//!   Used in `rustbuffer_from_bytes` and for `&[u8]` arguments, to hand owned-by-JS
+//!   bytes to Rust without copying. Passed by value.
 //! - [`RustCallStatusC`]: The error-reporting out-parameter—`{ code: i8, error_buf: RustBuffer }`.
 //!   The `error_buf` fields are **inlined** (not nested) because we need direct field access
 //!   when constructing and inspecting the struct from Rust, and because `#[repr(C)]` layout
@@ -40,10 +41,12 @@ pub struct RustBufferC {
 
 /// C layout of UniFFI's `ForeignBytes`: a **borrowed** byte view into JS-owned memory.
 ///
-/// Used exclusively by the `rustbuffer_from_bytes` FFI function, which copies the
-/// contents into a new `RustBuffer`. The JS caller must keep the backing `Buffer`
-/// alive until the call returns.
+/// Used by the `rustbuffer_from_bytes` FFI function, which copies the contents
+/// into a new `RustBuffer`, and for `&[u8]` arguments, which Rust borrows for
+/// one call. The JS caller must keep the backing `Buffer` alive, and not change
+/// it, until the call returns.
 #[repr(C)]
+#[derive(Clone, Copy, Debug)]
 pub struct ForeignBytesC {
     pub len: i32,
     pub data: *const u8,

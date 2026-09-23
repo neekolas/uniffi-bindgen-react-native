@@ -21,6 +21,117 @@ function openLib() {
   return UniffiNativeModule.open(LIB_PATH);
 }
 
+// `uniffi_test_rustbuffer_from_bytes` takes a `ForeignBytes` by value and
+// returns a copy of its bytes, so it shows what Rust got for a `&[u8]`.
+function foreignBytesModule(args = [FfiType.ForeignBytes]) {
+  return openLib().register({
+    symbols: SYMBOLS,
+    structs: {},
+    callbacks: {},
+    functions: {
+      uniffi_test_rustbuffer_from_bytes: {
+        args,
+        ret: FfiType.RustBuffer,
+        hasRustCallStatus: true,
+      },
+      uniffi_test_fn_echo_buffer: {
+        args: [FfiType.RustBuffer],
+        ret: FfiType.RustBuffer,
+        hasRustCallStatus: true,
+      },
+    },
+  });
+}
+
+function borrow(nm, view, status = { code: 0 }) {
+  const result = nm.uniffi_test_rustbuffer_from_bytes(view, status);
+  const copy = new Uint8Array(result);
+  nm.rustbuffer_free(result);
+  return copy;
+}
+
+test("ForeignBytes: Rust gets the view's bytes, with its offset", () => {
+  const nm = foreignBytesModule();
+  const backing = new Uint8Array([99, 10, 20, 30, 88]);
+  assert.deepStrictEqual(borrow(nm, backing.subarray(1, 4)), new Uint8Array([10, 20, 30]));
+  assert.deepStrictEqual(borrow(nm, backing.subarray(3, 3)), new Uint8Array());
+  assert.deepStrictEqual(borrow(nm, new Uint8Array()), new Uint8Array());
+  assert.deepStrictEqual(backing, new Uint8Array([99, 10, 20, 30, 88]));
+});
+
+test("ForeignBytes: a value that is not a Uint8Array is an error", () => {
+  const nm = foreignBytesModule();
+  for (const value of [
+    new Int8Array(2),
+    new Uint8ClampedArray(2),
+    new Uint16Array(2),
+    new DataView(new ArrayBuffer(2)),
+    new ArrayBuffer(2),
+    {},
+  ]) {
+    assert.throws(
+      () => nm.uniffi_test_rustbuffer_from_bytes(value, { code: 0 }),
+      /must be a Uint8Array/,
+    );
+  }
+});
+
+test("ForeignBytes: a failed check does not consume an owned RustBuffer", () => {
+  // The owned argument comes first, but the `&[u8]` check runs first, so the
+  // library-owned view is not adopted when the check fails.
+  const nm = foreignBytesModule([FfiType.RustBuffer, FfiType.ForeignBytes]);
+  const owned = nm.rustbuffer_alloc(4);
+  owned.set([1, 2, 3, 4]);
+  assert.throws(
+    () => nm.uniffi_test_rustbuffer_from_bytes(owned, {}, { code: 0 }),
+    /must be a Uint8Array/,
+  );
+  const status = { code: 0 };
+  const echoed = nm.uniffi_test_fn_echo_buffer(owned, status);
+  assert.strictEqual(status.code, 0);
+  assert.deepStrictEqual(new Uint8Array(echoed), new Uint8Array([1, 2, 3, 4]));
+  nm.rustbuffer_free(echoed);
+});
+
+test("ForeignBytes: a SharedArrayBuffer view is copied", () => {
+  const nm = foreignBytesModule();
+  const shared = new Uint8Array(new SharedArrayBuffer(5));
+  shared.set([9, 1, 2, 3, 9]);
+  assert.deepStrictEqual(borrow(nm, shared.subarray(1, 4)), new Uint8Array([1, 2, 3]));
+  assert.deepStrictEqual(borrow(nm, shared.subarray(2, 2)), new Uint8Array());
+});
+
+test("ForeignBytes: the pointer is read after the status object", () => {
+  const nm = foreignBytesModule();
+  const view = new Uint8Array([1, 2, 3]);
+  const status = {
+    get code() {
+      view[1] = 42;
+      return 0;
+    },
+    set code(_value) {},
+  };
+  assert.deepStrictEqual(borrow(nm, view, status), new Uint8Array([1, 42, 3]));
+});
+
+test("ForeignBytes: a detached buffer gives Rust an empty slice", () => {
+  const nm = foreignBytesModule();
+  const detached = new Uint8Array([1, 2, 3]);
+  structuredClone(detached.buffer, { transfer: [detached.buffer] });
+  assert.deepStrictEqual(borrow(nm, detached), new Uint8Array());
+
+  // Detached by JS that runs after the check, while the status is read.
+  const view = new Uint8Array([1, 2, 3]);
+  const status = {
+    get code() {
+      structuredClone(view.buffer, { transfer: [view.buffer] });
+      return 0;
+    },
+    set code(_value) {},
+  };
+  assert.deepStrictEqual(borrow(nm, view, status), new Uint8Array());
+});
+
 test("RustBuffer echo: pass Uint8Array, get same bytes back", () => {
   const lib = openLib();
   const nm = lib.register({

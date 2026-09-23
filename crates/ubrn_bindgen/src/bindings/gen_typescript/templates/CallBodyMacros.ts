@@ -73,10 +73,16 @@ console.debug(`-- {{ ffi_name }}`);
 {#- Lowered argument list (for FFI calls). Every arg goes through
    `converter.lower(value, nativeModule().rustbuffer_alloc)`; for `RustBuffer`-shaped
    types the converter writes straight into a wasm allocation supplied
-   by `rustbuffer_alloc`, so there is no JS-side intermediate copy. -#}
+   by `rustbuffer_alloc`, so there is no JS-side intermediate copy.
+   A `&[u8]` arg goes through `converter.lowerBorrowed(value)` instead: Rust
+   borrows the bytes for the call, so they are not copied into a RustBuffer. -#}
 {%- macro arg_list_lowered(callable) %}
     {%- for arg in callable.arguments %}
+    {%-   if arg.is_borrowed_bytes %}
+        {{ arg.ffi_converter }}.lowerBorrowed({{ arg.name }}),
+    {%-   else %}
         {{ arg.ffi_converter }}.lower({{ arg.name }}, nativeModule().rustbuffer_alloc),
+    {%-   endif %}
     {%- endfor %}
 {%- endmacro -%}
 

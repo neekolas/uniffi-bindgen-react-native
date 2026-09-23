@@ -20,7 +20,7 @@
 
 use std::ffi::c_void;
 
-use crate::ffi_c_types::RustBufferC;
+use crate::ffi_c_types::{ForeignBytesC, RustBufferC};
 
 macro_rules! scalar_slot {
     ($write:ident, $read:ident, $t:ty) => {
@@ -91,9 +91,41 @@ pub fn read_rust_buffer(slot: &[u8]) -> RustBufferC {
     unsafe { std::ptr::read_unaligned(slot.as_ptr() as *const RustBufferC) }
 }
 
+/// Write a [`ForeignBytesC`] into the leading bytes of `slot` as its raw `repr(C)` form.
+///
+/// Writes each field at its offset, so the padding bytes keep their value (the
+/// slot starts zeroed).
+#[inline]
+pub fn write_foreign_bytes(slot: &mut [u8], fb: ForeignBytesC) {
+    write_i32(slot, fb.len);
+    write_pointer(
+        &mut slot[std::mem::offset_of!(ForeignBytesC, data)..],
+        fb.data.cast(),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn foreign_bytes_layout() {
+        let data = [9u8, 1, 2, 3];
+        let mut slot = [0u8; std::mem::size_of::<ForeignBytesC>()];
+        write_foreign_bytes(
+            &mut slot,
+            ForeignBytesC {
+                len: 3,
+                data: data[1..].as_ptr(),
+            },
+        );
+        assert_eq!(read_i32(&slot), 3);
+        let data_offset = std::mem::offset_of!(ForeignBytesC, data);
+        assert_eq!(
+            read_pointer(&slot[data_offset..]),
+            data[1..].as_ptr() as usize
+        );
+    }
 
     #[test]
     fn round_trip_scalars() {

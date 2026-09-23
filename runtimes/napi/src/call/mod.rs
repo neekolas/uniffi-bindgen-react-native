@@ -57,6 +57,20 @@ pub(crate) fn call_ffi_function(
 
     let mut call = module.prepare_call(fn_name).map_err(core_err)?;
 
+    // Check every `&[u8]` argument before any other argument is converted, so a
+    // failed check cannot leak an owned `RustBuffer`. The pointers are read
+    // later, just before the call. A `BorrowedBytes::Copy` must live until the
+    // call returns.
+    let mut borrowed = Vec::new();
+    for (i, desc) in arg_types.iter().enumerate() {
+        if matches!(desc, FfiTypeDesc::ForeignBytes) {
+            let js_val: JsUnknown = ctx.get(i)?;
+            // SAFETY: `js_val` is a value from the current callback scope.
+            let bytes = unsafe { napi_utils::BorrowedBytes::check(env.raw(), js_val.raw())? };
+            borrowed.push((i, bytes));
+        }
+    }
+
     // NOTE: arguments are lowered in order, and lowering a library-owned `RustBuffer` adopts its
     // allocation (the callee frees it). If a *later* argument fails to lower we return early
     // without invoking the callee, so any already-adopted buffer in this call is orphaned. This
@@ -66,6 +80,8 @@ pub(crate) fn call_ffi_function(
         let js_val: JsUnknown = ctx.get(i)?;
         let slot = call.arg_slot(i).map_err(core_err)?;
         match desc {
+            // Written below, after every conversion that can run JS.
+            FfiTypeDesc::ForeignBytes => {}
             FfiTypeDesc::RustBuffer => {
                 let rust_buffer = unsafe {
                     napi_utils::js_uint8array_to_rust_buffer(
@@ -168,7 +184,15 @@ pub(crate) fn call_ffi_function(
         }
     }
 
+    // Read the `&[u8]` pointers last: no JS runs between here and the call.
+    for (i, bytes) in &borrowed {
+        // SAFETY: same env and callback scope as `BorrowedBytes::check` above.
+        let foreign = unsafe { bytes.foreign_bytes(env.raw()) };
+        slot::write_foreign_bytes(call.arg_slot(*i).map_err(core_err)?, foreign);
+    }
+
     let call_ret = module.call(call).map_err(core_err)?;
+    drop(borrowed);
 
     if has_rust_call_status {
         if let Some(mut js_status) = status_js_obj {

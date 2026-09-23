@@ -18,7 +18,9 @@ pub(crate) fn ffi_type_to_ts(ffi_type: &general::FfiType) -> String {
         general::FfiType::Handle(_) => "bigint".into(),
         general::FfiType::RustBuffer(_) => "Uint8Array".into(),
         general::FfiType::RustCallStatus => "UniffiRustCallStatus".into(),
-        general::FfiType::ForeignBytes => "ForeignBytes".into(),
+        // A `&[u8]` argument reaches the native module as a `Uint8Array` view
+        // (see `lowerBorrowed` in `ffi-converters.ts`).
+        general::FfiType::ForeignBytes => "Uint8Array".into(),
         general::FfiType::Function(name) => format!("Uniffi{}", name.0.to_upper_camel_case()),
         general::FfiType::Struct(name) => format!("Uniffi{}", name.0.to_upper_camel_case()),
         general::FfiType::Reference(inner) | general::FfiType::MutReference(inner) => {
