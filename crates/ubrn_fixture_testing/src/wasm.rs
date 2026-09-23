@@ -90,12 +90,13 @@ pub fn run_test(crate_name: &str, test_script: &str, target_tmpdir: &str) {
     ubrn_common::run_wasm_bindgen(&wasm_file, &wasm_bindgen_dir, "index")
         .unwrap_or_else(|e| panic!("wasm-bindgen on {wasm_file}: {e:#}"));
 
-    // Step 7: Write fixture tsconfig for @generated/* resolution, then run tsx.
-    // The guard ensures cleanup even if run_tsx panics.
+    // Step 7: Write fixture tsconfig for @generated/* resolution, type-check
+    // with tsc, then run tsx. The guard ensures cleanup even if a step panics.
     let _tsconfig_guard = crate::CleanupFile::new(crate::write_fixture_tsconfig(
         &fixture_dir,
         crate::Flavor::Wasm,
     ));
+    crate::run_tsc(&fixture_dir, crate::Flavor::Wasm, test_script);
     crate::run_tsx(test_script);
 }
 

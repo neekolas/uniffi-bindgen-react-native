@@ -37,11 +37,12 @@ pub fn run_test(crate_name: &str, test_script: &str, _target_tmpdir: &str) {
     let ts_dir = generated_napi.join("ts");
     generate_bindings(&cdylib_path, &ts_dir);
 
-    // Step 3: Write fixture tsconfig, then run tsx.
+    // Step 3: Write fixture tsconfig, type-check with tsc, then run tsx.
     let _tsconfig_guard = crate::CleanupFile::new(crate::write_fixture_tsconfig(
         &fixture_dir,
         crate::Flavor::Napi,
     ));
+    crate::run_tsc(&fixture_dir, crate::Flavor::Napi, test_script);
     run_test_runner(test_script);
 }
 

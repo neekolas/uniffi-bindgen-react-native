@@ -54,11 +54,13 @@ pub fn run_test(crate_name: &str, test_script: &str, target_tmpdir: &str) {
     // directly and never call `uniffiInitAsync`.
     let bootstrap = write_node_bootstrap(&ts_dir, &lib_stem);
 
-    // Step 5: Write fixture tsconfig + run tsx.
+    // Step 5: Write fixture tsconfig, type-check with tsc (this also checks
+    // the preload), then run tsx.
     let _tsconfig_guard = crate::CleanupFile::new(crate::write_fixture_tsconfig(
         &fixture_dir,
         crate::Flavor::Wasm2,
     ));
+    crate::run_tsc(&fixture_dir, crate::Flavor::Wasm2, test_script);
     crate::run_tsx_with_preload(test_script, &bootstrap);
 }
 

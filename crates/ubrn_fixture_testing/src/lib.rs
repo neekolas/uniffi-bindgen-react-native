@@ -159,11 +159,7 @@ pub(crate) fn write_fixture_tsconfig(
     fixture_dir: &camino::Utf8Path,
     flavor: Flavor,
 ) -> camino::Utf8PathBuf {
-    let flavor_str = flavor.as_str();
-    let repo_root = paths::repo_root();
-    let rel_root = relative_path(repo_root, fixture_dir);
-
-    let runtime_paths = tsconfig_runtimes(flavor, &rel_root);
+    let entries = tsconfig_paths(fixture_dir, flavor, Resolver::Tsx);
 
     let tsconfig_path = fixture_dir.join("tsconfig.json");
     let contents = format!(
@@ -171,10 +167,7 @@ pub(crate) fn write_fixture_tsconfig(
   "compilerOptions": {{
     "baseUrl": ".",
     "paths": {{
-      "@/generated": ["./generated/{flavor_str}/ts"],
-      "@/generated/*": ["./generated/{flavor_str}/ts/*"],
-      "@/*": ["{rel_root}/typescript/testing/*"],
-      {runtime_paths}
+      {entries}
     }}
   }}
 }}
@@ -184,33 +177,101 @@ pub(crate) fn write_fixture_tsconfig(
     tsconfig_path
 }
 
-fn tsconfig_runtimes(flavor: Flavor, rel_root: &Utf8PathBuf) -> String {
-    let mut runtime_paths = vec![
+/// The tool that reads the `paths` of a tsconfig.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Resolver {
+    /// tsx, which runs the JavaScript.
+    Tsx,
+    /// tsc, which reads the types.
+    Tsc,
+}
+
+/// The `paths` entries of a fixture tsconfig, relative to `fixture_dir`.
+fn tsconfig_paths(fixture_dir: &Utf8Path, flavor: Flavor, resolver: Resolver) -> String {
+    let flavor_str = flavor.as_str();
+    let rel_root = relative_path(paths::repo_root(), fixture_dir);
+    let mut entries = vec![
+        format!(r#""@/generated": ["./generated/{flavor_str}/ts"]"#),
+        format!(r#""@/generated/*": ["./generated/{flavor_str}/ts/*"]"#),
+        format!(r#""@/*": ["{rel_root}/typescript/testing/*"]"#),
         format!(r#""@ubjs/core": ["{rel_root}/typescript/src/index"]"#),
         // Defensive: kept so mid-rollout fixtures still resolve. Drop
         // once all generated fixtures are regenerated to import @ubjs/core.
         format!(r#""uniffi-bindgen-react-native": ["{rel_root}/typescript/src/index"]"#),
     ];
     if flavor == Flavor::Napi {
-        runtime_paths.push(format!(r#""@ubjs/node": ["{rel_root}/runtimes/napi/lib"]"#));
+        // tsx loads `lib.js`. tsc reads the package directory, so it uses the
+        // `types` file of `package.json`, the same as a project that installs
+        // the package. tsx cannot load a directory.
+        let node = match resolver {
+            Resolver::Tsx => "runtimes/napi/lib",
+            Resolver::Tsc => "runtimes/napi",
+        };
+        entries.push(format!(r#""@ubjs/node": ["{rel_root}/{node}"]"#));
     }
     if flavor == Flavor::Wasm2 {
         // `paths` bypasses the package `exports` map, so the bare specifier
         // the generated index imports needs pointing at the node build.
-        runtime_paths.push(format!(
+        entries.push(format!(
             r#""@ubjs/wasm": ["{rel_root}/runtimes/wasm/node/src/index"]"#
         ));
-        runtime_paths.push(format!(
+        entries.push(format!(
             r#""@ubjs/wasm/core": ["{rel_root}/runtimes/wasm/core/src/index"]"#
         ));
-        runtime_paths.push(format!(
+        entries.push(format!(
             r#""@ubjs/wasm/browser": ["{rel_root}/runtimes/wasm/browser/src/index"]"#
         ));
-        runtime_paths.push(format!(
+        entries.push(format!(
             r#""@ubjs/wasm/node": ["{rel_root}/runtimes/wasm/node/src/index"]"#
         ));
     }
-    runtime_paths.join(",\n      ")
+    entries.join(",\n      ")
+}
+
+/// Type-check the test script and the generated bindings with strict `tsc`.
+///
+/// tsx removes the types and does not check them. JSI checks the types when
+/// it compiles with `tsc` (see [`typescript::prepare_for_jsi`]). This function
+/// does the same check for the flavors that run on Node.
+///
+/// The tsconfig goes in `generated/$flavor/`, next to the bindings. It has
+/// the same `paths` as the fixture tsconfig, but `@ubjs/node` resolves to the
+/// published types. It includes all of the generated TypeScript files, also
+/// the files that the test script does not import. The `dom` lib declares
+/// `WebAssembly`, which the wasm runtime uses.
+pub(crate) fn run_tsc(fixture_dir: &Utf8Path, flavor: Flavor, test_script: &Utf8Path) {
+    let entries = tsconfig_paths(fixture_dir, flavor, Resolver::Tsc);
+    let test_script = test_script.to_forward_slash();
+
+    let tsconfig_path = fixture_dir
+        .join("generated")
+        .join(flavor.as_str())
+        .join("tsconfig.json");
+    let contents = format!(
+        r#"{{
+  "compilerOptions": {{
+    "baseUrl": "../..",
+    "paths": {{
+      {entries}
+    }},
+    "strict": true,
+    "noEmit": true,
+    "target": "es2022",
+    "lib": ["es2024", "dom"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true
+  }},
+  "files": ["{test_script}"],
+  "include": ["ts/**/*.ts"]
+}}
+"#
+    );
+    std::fs::write(&tsconfig_path, contents).expect("failed to write tsconfig.json for tsc");
+
+    let tsc = paths::node_modules_bin().join("tsc");
+    run_cmd_quietly(command(&tsc).arg("--project").arg(tsconfig_path.as_str()));
 }
 
 /// Run a test script with tsx and experimental WASM module support.
