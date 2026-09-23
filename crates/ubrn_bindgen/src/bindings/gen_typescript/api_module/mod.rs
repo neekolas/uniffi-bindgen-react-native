@@ -374,6 +374,26 @@ impl DeferredWrapper {
     }
 }
 
+/// The canonical name of the type that a type definition defines. The
+/// `builtin` of a custom type refers to its type definition by this name.
+fn type_definition_name(td: &general::TypeDefinition) -> &str {
+    use general::TypeDefinition as T;
+    match td {
+        T::Simple(self_type)
+        | T::Box(general::BoxedType { self_type, .. })
+        | T::Optional(general::OptionalType { self_type, .. })
+        | T::Sequence(general::SequenceType { self_type, .. })
+        | T::Map(general::MapType { self_type, .. })
+        | T::Set(general::SetType { self_type, .. })
+        | T::Record(general::Record { self_type, .. })
+        | T::Enum(general::Enum { self_type, .. })
+        | T::Interface(general::Interface { self_type, .. })
+        | T::CallbackInterface(general::CallbackInterface { self_type, .. })
+        | T::Custom(general::CustomType { self_type, .. })
+        | T::External(general::ExternalType { self_type, .. }) => &self_type.canonical_name,
+    }
+}
+
 /// Puts each deferred converter after the deferred converters that it uses.
 ///
 /// Each deferred converter is a `const` that reads its inner converter when
@@ -448,6 +468,8 @@ impl TsApiModule {
         // to avoid temporal-dead-zone errors where a wrapper references a converter
         // that hasn't been initialised yet.
         let mut deferred_wrappers: Vec<DeferredWrapper> = Vec::new();
+        // The canonical names of the type definitions before this one.
+        let mut seen: HashSet<&str> = HashSet::new();
 
         for td in &namespace.type_definitions {
             match td {
@@ -495,19 +517,15 @@ impl TsApiModule {
                 general::TypeDefinition::Custom(custom) => {
                     let td = TsTypeDefinition::Custom(build_custom_type(config, custom));
                     // A custom type reads its builtin converter when the module
-                    // loads, so it is deferred when that converter is deferred.
-                    // uniffi-rs puts the builtin type first, so a custom type
-                    // over a deferred custom type finds it here.
-                    let builtin_is_deferred = matches!(
-                        custom.builtin.ty,
-                        general::Type::Map { .. }
-                            | general::Type::Sequence { .. }
-                            | general::Type::Set { .. }
-                            | general::Type::Box { .. }
-                            | general::Type::Optional { .. }
-                    ) || deferred_wrappers
-                        .iter()
-                        .any(|w| w.name == custom.builtin.canonical_name);
+                    // loads. So it is deferred when that converter is deferred
+                    // (each wrapper is), or when that converter comes later.
+                    // uniffi-rs puts the builtin type first, but not always in
+                    // a type cycle: in `Inner -> Vec<E> -> E -> Wrapped ->
+                    // Inner`, `Wrapped` can come before `Inner`. Then
+                    // `sort_deferred_wrappers` puts it after its builtin.
+                    let builtin = custom.builtin.canonical_name.as_str();
+                    let builtin_is_deferred = !seen.contains(builtin)
+                        || deferred_wrappers.iter().any(|w| w.name == builtin);
                     if builtin_is_deferred {
                         deferred_wrappers.push(DeferredWrapper::new(
                             &custom.self_type,
@@ -552,6 +570,7 @@ impl TsApiModule {
                     ));
                 }
             }
+            seen.insert(type_definition_name(td));
         }
 
         defs.extend(sort_deferred_wrappers(deferred_wrappers));
@@ -925,6 +944,225 @@ mod deferred_wrapper_tests {
             names(sorted),
             order.iter().map(|(name, _)| *name).collect::<Vec<_>>()
         );
+    }
+
+    /// Runs metadata for one crate through the general pipeline, as `cli.rs`
+    /// does, and checks the order of the converters.
+    mod custom_types_in_a_cycle {
+        use super::*;
+        use uniffi_bindgen::pipeline::initial::UniffiMetaConverter;
+        use uniffi_meta::{
+            CustomTypeMetadata, EnumMetadata, EnumShape, FieldMetadata, Metadata,
+            NamespaceMetadata, RecordMetadata, Type, VariantMetadata,
+        };
+
+        const CRATE: &str = "cycle_crate";
+
+        fn field(name: &str, ty: Type) -> FieldMetadata {
+            FieldMetadata {
+                name: name.into(),
+                orig_name: None,
+                ty,
+                default: None,
+                docstring: None,
+            }
+        }
+
+        fn record(name: &str, fields: Vec<Type>) -> Metadata {
+            Metadata::Record(RecordMetadata {
+                module_path: CRATE.into(),
+                name: name.into(),
+                orig_name: None,
+                remote: false,
+                fields: fields
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, ty)| field(&format!("f{i}"), ty))
+                    .collect(),
+                docstring: None,
+            })
+        }
+
+        fn enum_(name: &str, variants: Vec<Vec<Type>>) -> Metadata {
+            Metadata::Enum(EnumMetadata {
+                module_path: CRATE.into(),
+                name: name.into(),
+                orig_name: None,
+                shape: EnumShape::Enum,
+                remote: false,
+                variants: variants
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, fields)| VariantMetadata {
+                        name: format!("V{i}"),
+                        orig_name: None,
+                        discr: None,
+                        fields: fields
+                            .into_iter()
+                            .enumerate()
+                            .map(|(j, ty)| field(&format!("f{j}"), ty))
+                            .collect(),
+                        docstring: None,
+                    })
+                    .collect(),
+                discr_type: None,
+                non_exhaustive: false,
+                docstring: None,
+            })
+        }
+
+        fn custom(name: &str, builtin: Type) -> (Metadata, Type) {
+            let metadata = Metadata::CustomType(CustomTypeMetadata {
+                module_path: CRATE.into(),
+                name: name.into(),
+                orig_name: None,
+                builtin: builtin.clone(),
+                docstring: None,
+            });
+            let ty = Type::Custom {
+                module_path: CRATE.into(),
+                name: name.into(),
+                builtin: Box::new(builtin),
+            };
+            (metadata, ty)
+        }
+
+        fn record_ty(name: &str) -> Type {
+            Type::Record {
+                module_path: CRATE.into(),
+                name: name.into(),
+            }
+        }
+
+        fn enum_ty(name: &str) -> Type {
+            Type::Enum {
+                module_path: CRATE.into(),
+                name: name.into(),
+            }
+        }
+
+        fn namespace() -> anyhow::Result<general::Namespace> {
+            // Custom over a record in the cycle `Inner -> Vec<E> -> E ->
+            // Wrapped -> Inner`, and a custom type over that custom type.
+            let (wrapped, wrapped_ty) = custom("Wrapped", record_ty("Inner"));
+            let (rewrapped, rewrapped_ty) = custom("Rewrapped", wrapped_ty.clone());
+            // Custom over an enum in the cycles `Shape -> HashMap<String,
+            // ShapeRef> -> ShapeRef -> Shape` and `Shape ->
+            // Option<Box<ShapeRef>> -> ShapeRef -> Shape`.
+            let (shape_ref, shape_ref_ty) = custom("ShapeRef", enum_ty("Shape"));
+            // Custom types that are not in a cycle.
+            let (plain_ref, plain_ref_ty) = custom("PlainRef", record_ty("Plain"));
+            let (num, num_ty) = custom("Num", Type::Int32);
+            let items = vec![
+                Metadata::Namespace(NamespaceMetadata {
+                    crate_name: CRATE.into(),
+                    name: CRATE.into(),
+                }),
+                record(
+                    "Inner",
+                    vec![Type::Sequence {
+                        inner_type: Box::new(enum_ty("E")),
+                    }],
+                ),
+                enum_("E", vec![vec![wrapped_ty], vec![rewrapped_ty], vec![]]),
+                wrapped,
+                rewrapped,
+                enum_(
+                    "Shape",
+                    vec![
+                        vec![Type::Map {
+                            key_type: Box::new(Type::String),
+                            value_type: Box::new(shape_ref_ty.clone()),
+                        }],
+                        vec![Type::Optional {
+                            inner_type: Box::new(Type::Box {
+                                inner_type: Box::new(shape_ref_ty),
+                            }),
+                        }],
+                    ],
+                ),
+                shape_ref,
+                record("Plain", vec![Type::Int32]),
+                plain_ref,
+                num,
+                record("UsesPlain", vec![plain_ref_ty, num_ty]),
+            ];
+            let mut converter = UniffiMetaConverter::default();
+            for item in items {
+                converter.add_metadata_item(item)?;
+            }
+            let root =
+                general::pipeline("react-native").execute(converter.try_into_initial_ir()?)?;
+            Ok(root.namespaces[CRATE].clone())
+        }
+
+        /// The converter that each definition makes, and the converters that
+        /// it reads when the module loads.
+        fn converters(def: &TsTypeDefinition) -> Option<(&str, Vec<&str>)> {
+            match def {
+                TsTypeDefinition::Custom(c) => Some((
+                    c.ffi_converter_name.as_str(),
+                    vec![c.builtin_ffi_converter.as_str()],
+                )),
+                TsTypeDefinition::SimpleWrapper(w) => Some((
+                    w.ffi_converter_name.as_str(),
+                    w.inner_converters.iter().map(String::as_str).collect(),
+                )),
+                TsTypeDefinition::Record(r) => Some((r.ffi_converter_name.as_str(), vec![])),
+                TsTypeDefinition::TaggedEnum(e) => Some((e.ffi_converter_name.as_str(), vec![])),
+                _ => None,
+            }
+        }
+
+        #[test]
+        fn each_custom_type_comes_after_its_builtin_converter() -> anyhow::Result<()> {
+            let namespace = namespace()?;
+
+            // Without this, the test does not check anything: uniffi-rs puts
+            // these custom types before their builtin types.
+            let position = |name: &str| {
+                namespace
+                    .type_definitions
+                    .iter()
+                    .position(|td| type_definition_name(td) == name)
+                    .expect("a type definition")
+            };
+            assert!(position("TypeWrapped") < position("TypeInner"));
+            assert!(position("TypeShapeRef") < position("TypeShape"));
+
+            let defs = TsApiModule::build_type_definitions(
+                &Config::default(),
+                &namespace,
+                &HashSet::new(),
+                &AbiFlavor::Jsi,
+            );
+            let order: Vec<_> = defs.iter().map(converters).collect();
+            let index = |name: &str| {
+                order
+                    .iter()
+                    .position(|c| c.as_ref().is_some_and(|(n, _)| *n == name))
+            };
+            for (i, converter) in order.iter().enumerate() {
+                let Some((name, reads)) = converter else {
+                    continue;
+                };
+                for read in reads {
+                    if let Some(j) = index(read) {
+                        assert!(j < i, "{name} reads {read} before it is declared");
+                    }
+                }
+            }
+
+            // Custom types that are not in a cycle do not move.
+            let first_wrapper = defs
+                .iter()
+                .position(|d| matches!(d, TsTypeDefinition::SimpleWrapper(_)))
+                .expect("a wrapper");
+            for name in ["FfiConverterTypePlainRef", "FfiConverterTypeNum"] {
+                assert!(index(name).expect("a converter") < first_wrapper, "{name}");
+            }
+            Ok(())
+        }
     }
 }
 
