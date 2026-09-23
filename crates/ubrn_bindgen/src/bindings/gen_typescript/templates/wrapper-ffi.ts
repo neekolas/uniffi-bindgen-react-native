@@ -6,6 +6,21 @@
 {%- if !module.strict_type_checking %}
 // @ts-nocheck
 {%- endif %}
+{#- Import a type only when this file uses it. #}
+{%- if !module.is_jsi && module.core_types.any() %}
+
+import type {
+  {%- if module.core_types.rust_call_status %}
+  UniffiRustCallStatus,
+  {%- endif %}
+  {%- if module.core_types.gc_object %}
+  UniffiGcObject,
+  {%- endif %}
+  {%- if module.core_types.result %}
+  UniffiResult,
+  {%- endif %}
+} from '@ubjs/core';
+{%- endif %}
 {%- if module.is_jsi %}
 
 import {
@@ -15,12 +30,18 @@ import {
   {%- if module.has_foreign_future %}
   type UniffiForeignFuture as RuntimeUniffiForeignFuture,
   {%- endif %}
+  {%- if module.core_types.rust_call_status %}
   type UniffiRustCallStatus,
+  {%- endif %}
+  {%- if module.core_types.gc_object %}
   type UniffiGcObject,
+  {%- endif %}
   {%- if module.has_continuation_callback %}
   type UniffiRustFutureContinuationCallback as RuntimeUniffiRustFutureContinuationCallback,
   {%- endif %}
+  {%- if module.core_types.result %}
   type UniffiResult,
+  {%- endif %}
  } from '@ubjs/core';
 
 interface NativeModuleInterface {

@@ -76,6 +76,8 @@ pub(crate) struct PlayerFfiModule {
     pub typed_functions: Vec<super::super::ffi_module::FfiFunctionDecl>,
     /// Definitions (callbacks/structs) for TypeScript type exports.
     pub typed_definitions: Vec<super::super::ffi_module::FfiDefinitionDecl>,
+    /// The `@ubjs/core` types that the typed declarations name.
+    pub core_types: super::super::ffi_module::CoreTypeUses,
 }
 
 pub(crate) struct PlayerSymbols {
@@ -142,6 +144,7 @@ impl PlayerFfiModule {
             structs: Vec::new(),
             typed_functions: Vec::new(),
             typed_definitions: Vec::new(),
+            core_types: Default::default(),
         }
     }
 }

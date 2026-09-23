@@ -50,6 +50,9 @@ impl TsFfiModule {
                 FfiDefinitionDecl::Struct(s) if s.name == "UniffiForeignFuture"
             )
         });
+        // Only the JSI file declares the functions.
+        let printed_functions: &[FfiFunctionDecl] = if is_jsi { &functions } else { &[] };
+        let core_types = CoreTypeUses::of(printed_functions, &definitions);
 
         Self {
             module_name,
@@ -59,6 +62,7 @@ impl TsFfiModule {
             definitions,
             has_continuation_callback,
             has_foreign_future,
+            core_types,
         }
     }
 

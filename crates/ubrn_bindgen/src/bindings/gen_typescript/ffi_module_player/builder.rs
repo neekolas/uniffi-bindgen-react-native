@@ -12,7 +12,7 @@ use super::type_mapping::ffi_type_to_player;
 use crate::bindings::gen_typescript::config::TsConfig;
 use crate::bindings::gen_typescript::ffi_module::type_mapping::ffi_type_to_ts;
 use crate::bindings::gen_typescript::ffi_module::{
-    namespace_has_async, FfiArgDecl, FfiFunctionDecl, TsFfiModule,
+    namespace_has_async, CoreTypeUses, FfiArgDecl, FfiFunctionDecl, TsFfiModule,
 };
 
 impl PlayerFfiModule {
@@ -45,6 +45,7 @@ impl PlayerFfiModule {
             structs,
             typed_functions: ts_module.functions,
             typed_definitions: ts_module.definitions,
+            core_types: ts_module.core_types,
         }
     }
 
@@ -186,6 +187,7 @@ impl PlayerFfiModule {
         }
 
         let definitions = TsFfiModule::build_definitions(namespace);
+        let core_types = CoreTypeUses::of(&functions, &definitions);
 
         TsFfiModule {
             module_name,
@@ -195,6 +197,7 @@ impl PlayerFfiModule {
             definitions,
             has_continuation_callback: false,
             has_foreign_future: false,
+            core_types,
         }
     }
 

@@ -16,15 +16,21 @@ import { FfiType, type ModuleDefinitions } from "@ubjs/wasm/core";
 import lib from "@ubjs/node";
 const { UniffiNativeModule, FfiType, resolveLibPath } = lib;
 {%- endif %}
+{#- Import a type only when this file uses it. #}
+{%- if module.core_types.any() %}
 
 import {
-  type StructuralEquality as UniffiStructuralEquality,
-  type UniffiForeignFuture as RuntimeUniffiForeignFuture,
+  {%- if module.core_types.rust_call_status %}
   type UniffiRustCallStatus,
+  {%- endif %}
+  {%- if module.core_types.gc_object %}
   type UniffiGcObject,
-  type UniffiRustFutureContinuationCallback as RuntimeUniffiRustFutureContinuationCallback,
+  {%- endif %}
+  {%- if module.core_types.result %}
   type UniffiResult,
+  {%- endif %}
 } from '@ubjs/core';
+{%- endif %}
 
 // Arrays stay mutable; readonly does not assign to `FfiTypeDesc[]`.
 const DEFINITIONS = {
