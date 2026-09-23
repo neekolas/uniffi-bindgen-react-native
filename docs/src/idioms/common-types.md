@@ -53,6 +53,17 @@ An `async fn` cannot take a `&[u8]` argument. uniffi-bindgen-react-native stops 
 | Optional | `Option<T>` | `T \| undefined` | |
 | Sequences   | `Vec<T>` | `Array<T>` | Max length is 2**31 - 1|
 | Maps    | `HashMap<K, V>` <br/> `BTreeMap<K, V>` | `Map<K, V>` | Max length is 2**31 - 1 |
+| Sets    | `HashSet<T>` | `Set<T>` | Max length is 2**31 - 1. See [below](#sets) |
+| Boxes   | `Box<T>` | `T` | For recursive [enums](./enums.md#recursive-enums) and [records](./records.md) |
+
+#### Sets
+
+A `HashSet<T>` is a JS `Set<T>`. A JS `Set` compares its items with [`SameValueZero`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Equality_comparisons_and_sameness#same-value-zero_equality). Numbers, `bigint`s, strings and flat enums compare by value. Records, enums with properties, objects and byte arrays compare by reference. Kotlin and Swift compare the items of a set by value, so this is different:
+
+- A JS `Set` can hold two records that are equal. Rust removes the duplicates when it reads the set, so Rust can get fewer items than the JS `Set` has.
+- `set.has(record)` is `true` only for the same object, not for an equal record.
+
+Rust does not keep the order of a `HashSet`, so the items can come back to JS in a different order.
 
 ### Enumerated types
 

@@ -142,6 +142,26 @@ const dog = MyAnimal.Dog.new("Fido");
 const cat = MyAnimal.Cat.new();
 ```
 
+## Recursive enums
+
+An enum can refer to itself: directly with a `Box<Self>`, or through a `Vec`, an `Option` or a record. uniffi-rs finds these cycles.
+
+```rust
+#[derive(uniffi::Enum)]
+enum IntList {
+    Cons(i32, Box<IntList>),
+    Nil,
+}
+```
+
+A `Box<T>` is a `T` in Typescript, so `IntList.Cons` has `inner: [number, IntList]`. You make, match and pass a recursive enum in the same way as other enums:
+
+```typescript
+const list = IntList.Cons.new(1, IntList.Cons.new(2, IntList.Nil.new()));
+```
+
+The type `IntList` is a union of one object type for each variant, with the same members as the variant class. For other enums, the type comes from the variant classes. For some recursive enums, such as `IntList`, Typescript cannot compile a type that comes from the classes. This difference does not change how you use the enum.
+
 ## Enums with explicit discriminants
 
 Both [Rust](https://doc.rust-lang.org/reference/items/enumerations.html#discriminants) and Typescript allow you to specify discriminants to enum variants. As [in other bindings for uniffi-rs](https://mozilla.github.io/uniffi-rs/latest/proc_macro/index.html#variant-discriminants), this is supported by `uniffi-bindgen-react-native`. For example,
