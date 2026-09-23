@@ -130,6 +130,17 @@ test("enum variant tuple field default: i32", (t: Asserts) => {
   t.assertEqual(5, out.inner[0]);
 });
 
+test("enum variant tuple field default: None", (t: Asserts) => {
+  const v = TestCase.Four.new();
+  t.assertEqual(undefined, v.inner[0]);
+  const out = echoTestCase(v);
+  t.assertInstanceOf(out, TestCase.Four.instanceOf);
+  t.assertEqual(undefined, out.inner[0]);
+  const withValue = echoTestCase(TestCase.Four.new("label"));
+  t.assertInstanceOf(withValue, TestCase.Four.instanceOf);
+  t.assertEqual("label", withValue.inner[0]);
+});
+
 test("ordering: defaulted arg after non-defaulted", (t) => {
   t.assertEqual("hi!", join("hi"));
   t.assertEqual("hi?", join("hi", "?"));
