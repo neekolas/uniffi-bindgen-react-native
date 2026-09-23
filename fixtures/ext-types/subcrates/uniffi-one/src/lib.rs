@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/
  */
 use std::{
+    collections::HashSet,
     fmt::Display,
     sync::atomic::{AtomicI32, Ordering},
 };
@@ -12,6 +13,7 @@ pub struct UniffiOneType {
     pub sval: String,
 }
 
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub enum UniffiOneEnum {
     One,
     Two,
@@ -31,6 +33,13 @@ impl Display for UniffiOneError {
 #[derive(uniffi::Record)]
 pub struct UniffiOneProcMacroType {
     pub sval: String,
+}
+
+/// A record with a `HashSet` and a `Box`, which another crate uses.
+#[derive(uniffi::Record)]
+pub struct UniffiOneCollections {
+    pub names: HashSet<String>,
+    pub boxed: Option<Box<UniffiOneProcMacroType>>,
 }
 
 #[derive(Default)]

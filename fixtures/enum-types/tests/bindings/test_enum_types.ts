@@ -33,6 +33,19 @@ import {
   identityOptionalFields,
   NoReprColor,
   ReprColor,
+  ChainedError,
+  ChainedError_Tags,
+  Expr,
+  ExprGroup,
+  Expr_Tags,
+  IntList,
+  IntList_Tags,
+  failWithChain,
+  identityExpr,
+  identityExprGroup,
+  identityIntList,
+  intListSum,
+  makeIntList,
 } from "@/generated/enum_types";
 
 test("Enum discriminant", (t) => {
@@ -301,3 +314,134 @@ function testPatternMatching2(variant: AnimalNamedAssociatedType) {
     }
   }
 }
+
+// `IntList` is a recursive enum: `Cons` holds a `Box<IntList>`.
+function intListToArray(list: IntList): number[] {
+  const out: number[] = [];
+  let current = list;
+  while (current.tag === IntList_Tags.Cons) {
+    const [head, tail] = current.inner;
+    out.push(head);
+    current = tail;
+  }
+  return out;
+}
+
+test("Recursive enum: made in JS, read in Rust", (t) => {
+  const list = IntList.Cons.new(
+    1,
+    IntList.Cons.new(2, IntList.Cons.new(3, IntList.Nil.new())),
+  );
+  t.assertEqual(list.tag, IntList_Tags.Cons);
+  t.assertEqual(intListToArray(list), [1, 2, 3]);
+  t.assertEqual(intListSum(list), 6);
+  t.assertEqual(intListSum(IntList.Nil.new()), 0);
+});
+
+test("Recursive enum: made in Rust, read in JS", (t) => {
+  t.assertEqual(intListToArray(makeIntList([1, 2, 3, 4, 5])), [1, 2, 3, 4, 5]);
+  t.assertTrue(IntList.Nil.instanceOf(makeIntList([])));
+  t.assertTrue(IntList.instanceOf(makeIntList([])));
+});
+
+test("Recursive enum: round trips through Rust", (t) => {
+  const list = IntList.Cons.new(10, IntList.Cons.new(20, IntList.Nil.new()));
+  t.assertEqual(intListToArray(identityIntList(list)), [10, 20]);
+  t.assertEqual(intListToArray(identityIntList(IntList.Nil.new())), []);
+});
+
+test("Recursive enum: a long list crosses the FFI", (t) => {
+  const n = 500;
+  const values = Array.from({ length: n }, (_, i) => i + 1);
+  const list = makeIntList(values);
+  t.assertEqual(intListSum(list), (n * (n + 1)) / 2);
+  t.assertEqual(intListToArray(identityIntList(list)), values);
+});
+
+// A type check only: a value narrowed to one variant can go where the
+// variant class is the type.
+function testRecursiveNarrowing(list: IntList): number {
+  if (list.tag === IntList_Tags.Cons) {
+    const cons: InstanceType<typeof IntList.Cons> = list;
+    return cons.inner[0];
+  }
+  const nil: InstanceType<typeof IntList.Nil> = list;
+  return nil.tag === IntList_Tags.Nil ? 0 : -1;
+}
+
+test("Recursive enum: narrowing", (t) => {
+  t.assertEqual(testRecursiveNarrowing(makeIntList([7])), 7);
+  t.assertEqual(testRecursiveNarrowing(makeIntList([])), 0);
+});
+
+// `Expr` and `ExprGroup` refer to each other, and `Expr` refers to itself.
+function makeExpr(): Expr {
+  return Expr.Group.new({
+    label: "outer",
+    items: [
+      Expr.Num.new(1),
+      Expr.Negate.new({ expr: Expr.Num.new(5) }),
+      Expr.Group.new({ label: "inner", items: [Expr.Num.new(10)] }),
+    ],
+  });
+}
+
+test("Enum and record cycle: round trips through Rust", (t) => {
+  const expr = makeExpr();
+  t.assertEqual(Expr.eval(expr), 6);
+
+  const result = identityExpr(expr);
+  t.assertEqual(result.tag, Expr_Tags.Group);
+  t.assertTrue(result.equals(expr));
+  t.assertEqual(result.toString(), expr.toString());
+  t.assertEqual(result.hashCode(), expr.hashCode());
+  t.assertEqual(Expr.eval(result), 6);
+  t.assertFalse(result.equals(Expr.Num.new(6)));
+
+  if (result.tag === Expr_Tags.Group) {
+    const [group] = result.inner;
+    t.assertEqual(group.label, "outer");
+    t.assertEqual(group.items.length, 3);
+    const negate = group.items[1];
+    t.assertEqual(negate.tag, Expr_Tags.Negate);
+    if (negate.tag === Expr_Tags.Negate) {
+      t.assertEqual(Expr.eval(negate.inner.expr), 5);
+    }
+  }
+});
+
+test("Enum and record cycle: the record round trips through Rust", (t) => {
+  const group: ExprGroup = {
+    label: "g",
+    items: [makeExpr(), Expr.Num.new(-1)],
+  };
+  const result = identityExprGroup(group);
+  t.assertEqual(result.label, "g");
+  t.assertEqual(result.items.length, 2);
+  t.assertTrue(result.items[0].equals(group.items[0]));
+  t.assertEqual(Expr.eval(result.items[0]), 6);
+  t.assertEqual(Expr.eval(result.items[1]), -1);
+});
+
+test("Recursive error enum", (t) => {
+  t.assertThrows(ChainedError.Root.instanceOf, () => failWithChain(0));
+  t.assertThrows(ChainedError.Wrapped.instanceOf, () => failWithChain(2));
+  try {
+    failWithChain(2);
+    t.fail("No error was thrown");
+  } catch (e: any) {
+    t.assertTrue(ChainedError.Wrapped.instanceOf(e));
+    const outer = e as InstanceType<typeof ChainedError.Wrapped>;
+    t.assertEqual(outer.inner.depth, 2);
+    const middle = outer.inner.cause;
+    t.assertEqual(middle.tag, ChainedError_Tags.Wrapped);
+    if (middle.tag === ChainedError_Tags.Wrapped) {
+      t.assertEqual(middle.inner.depth, 1);
+      const root = middle.inner.cause;
+      t.assertEqual(root.tag, ChainedError_Tags.Root);
+      if (root.tag === ChainedError_Tags.Root) {
+        t.assertEqual(root.inner.message, "the cause");
+      }
+    }
+  }
+});

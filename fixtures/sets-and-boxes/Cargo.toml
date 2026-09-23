@@ -1,12 +1,12 @@
 [package]
-name = "uniffi-fixture-defaults"
+name = "uniffi-fixture-sets-and-boxes"
 edition = "2021"
 version = "0.22.0"
 license = "MPL-2.0"
 publish = false
 
 [lib]
-name = "uniffi_defaults"
+name = "uniffi_sets_and_boxes"
 crate-type = ["lib", "cdylib"]
 
 [dependencies]
@@ -17,9 +17,6 @@ uniffi = { workspace = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uniffi-runtime-wasm = { workspace = true }
 uniffi_core = { workspace = true, features = ["wasm-unstable-single-threaded"] }
-
-[build-dependencies]
-uniffi = { workspace = true, features = ["build"] }
 
 [dev-dependencies]
 ubrn_macros = { workspace = true }
