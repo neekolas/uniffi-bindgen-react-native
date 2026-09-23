@@ -22,6 +22,8 @@ import module3, {
   getExternalCrateInterface,
   getImportedNestedGuid,
   getImportedOuid,
+  getBoxedUniffiOneType,
+  getMaybeBoxedUniffiOneProcMacroType,
   getMaybeUniffiOneEnum,
   getMaybeUniffiOneEnums,
   getMaybeUniffiOneType,
@@ -29,7 +31,9 @@ import module3, {
   getMaybeUrls,
   getNestedExternalOuid,
   getObjectsType,
+  getUniffiOneCollections,
   getUniffiOneEnum,
+  getUniffiOneEnumSet,
   getUniffiOneEnums,
   getUniffiOneProcMacroType,
   getUniffiOneTrait,
@@ -48,6 +52,7 @@ import module4, {
 } from "@/generated/imported_types_sublib";
 import module5, {
   getMyProcMacroType,
+  UniffiOneCollections,
   UniffiOneEnum,
   UniffiOneError,
   UniffiOneProcMacroType,
@@ -187,4 +192,42 @@ test("TypeScript implementing an external trait works", (t) => {
     callTraitImpl(tsImpl),
     "hello from TypeScript implementing external trait",
   );
+});
+
+test("A set of an enum from uniffi-one, roundtrip function from lib", (t) => {
+  const result = getUniffiOneEnumSet(
+    new Set([UniffiOneEnum.One, UniffiOneEnum.Two]),
+  );
+  t.assertTrue(result instanceof Set);
+  t.assertEqual(result.size, 2);
+  t.assertTrue(result.has(UniffiOneEnum.One));
+  t.assertTrue(result.has(UniffiOneEnum.Two));
+  t.assertEqual(getUniffiOneEnumSet(new Set()).size, 0);
+});
+
+test("A boxed record from uniffi-one, roundtrip function from lib", (t) => {
+  t.assertEqual(
+    getBoxedUniffiOneType(UniffiOneType.create({ sval: "boxed" })).sval,
+    "boxed",
+  );
+  const pm = UniffiOneProcMacroType.create({ sval: "maybe boxed" });
+  t.assertEqual(getMaybeBoxedUniffiOneProcMacroType(pm), pm);
+  t.assertNull(getMaybeBoxedUniffiOneProcMacroType(undefined));
+});
+
+test("A record from uniffi-one with a set and a box, roundtrip function from lib", (t) => {
+  const value = UniffiOneCollections.create({
+    names: new Set(["a", "b"]),
+    boxed: UniffiOneProcMacroType.create({ sval: "in a box" }),
+  });
+  const result = getUniffiOneCollections(value);
+  t.assertTrue(result.names instanceof Set);
+  t.assertEqual([...result.names].sort(), ["a", "b"]);
+  t.assertEqual(result.boxed?.sval, "in a box");
+
+  const empty = getUniffiOneCollections(
+    UniffiOneCollections.create({ names: new Set(), boxed: undefined }),
+  );
+  t.assertEqual(empty.names.size, 0);
+  t.assertNull(empty.boxed);
 });

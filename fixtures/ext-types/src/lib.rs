@@ -12,10 +12,11 @@ use ext_types_custom::{ANestedGuid, Guid, Ouid};
 use ext_types_external_crate::{
     ExternalCrateDictionary, ExternalCrateInterface, ExternalCrateNonExhaustiveEnum,
 };
+use std::collections::HashSet;
 use std::sync::Arc;
 use uniffi_one::{
-    UniffiOneEnum, UniffiOneInterface, UniffiOneProcMacroType, UniffiOneTrait, UniffiOneType,
-    UniffiOneUDLTrait,
+    UniffiOneCollections, UniffiOneEnum, UniffiOneInterface, UniffiOneProcMacroType,
+    UniffiOneTrait, UniffiOneType, UniffiOneUDLTrait,
 };
 use uniffi_sublib::SubLibType;
 use url::Url;
@@ -202,6 +203,31 @@ fn get_uniffi_one_udl_trait(
     t: Option<Arc<dyn UniffiOneUDLTrait>>,
 ) -> Option<Arc<dyn UniffiOneUDLTrait>> {
     t
+}
+
+// `HashSet` and `Box` of types from other crates.
+#[uniffi::export]
+fn get_uniffi_one_enum_set(es: HashSet<UniffiOneEnum>) -> HashSet<UniffiOneEnum> {
+    es
+}
+
+#[uniffi::export]
+#[allow(clippy::boxed_local)]
+fn get_boxed_uniffi_one_type(t: Box<UniffiOneType>) -> Box<UniffiOneType> {
+    t
+}
+
+#[uniffi::export]
+fn get_maybe_boxed_uniffi_one_proc_macro_type(
+    t: Option<Box<UniffiOneProcMacroType>>,
+) -> Option<Box<UniffiOneProcMacroType>> {
+    t
+}
+
+// A record from another crate, with a `HashSet` and a `Box` in it.
+#[uniffi::export]
+fn get_uniffi_one_collections(value: UniffiOneCollections) -> UniffiOneCollections {
+    value
 }
 
 uniffi::include_scaffolding!("ext-types-lib");

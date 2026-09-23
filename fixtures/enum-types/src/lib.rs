@@ -98,6 +98,7 @@ impl AnimalObject {
     }
 }
 
+use std::collections::HashMap;
 use std::sync::Arc;
 // Adding an enum with a Associated Type that is a exported Arc<Object> with a exported Record field.
 // This is done to check for compilation errors.
@@ -158,6 +159,159 @@ pub(crate) enum OptionalFields {
 #[uniffi::export]
 fn identity_optional_fields(value: OptionalFields) -> OptionalFields {
     value
+}
+
+// A recursive enum: `Cons` holds a `Box<IntList>`. uniffi-rs 0.32 lifts and
+// lowers `Box<T>`, so a recursive enum can cross the FFI.
+#[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
+pub enum IntList {
+    Cons(i32, Box<IntList>),
+    Nil,
+}
+
+#[uniffi::export]
+fn identity_int_list(value: IntList) -> IntList {
+    value
+}
+
+#[uniffi::export]
+fn make_int_list(values: Vec<i32>) -> IntList {
+    let mut list = IntList::Nil;
+    for v in values.into_iter().rev() {
+        list = IntList::Cons(v, Box::new(list));
+    }
+    list
+}
+
+#[uniffi::export]
+fn int_list_sum(value: IntList) -> i32 {
+    let mut sum = 0;
+    let mut list = &value;
+    while let IntList::Cons(v, rest) = list {
+        sum += v;
+        list = rest;
+    }
+    sum
+}
+
+// An enum and a record that refer to each other. `Expr` also refers to itself
+// through a `Box`, and it has trait methods and a method.
+#[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq, Hash)]
+#[uniffi::export(Debug, Eq, Hash)]
+pub enum Expr {
+    Num(i32),
+    Negate { expr: Box<Expr> },
+    Group(ExprGroup),
+}
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ExprGroup {
+    pub label: String,
+    pub items: Vec<Expr>,
+}
+
+#[uniffi::export]
+impl Expr {
+    pub fn eval(&self) -> i32 {
+        match self {
+            Expr::Num(n) => *n,
+            Expr::Negate { expr } => -expr.eval(),
+            Expr::Group(group) => group.items.iter().map(Expr::eval).sum(),
+        }
+    }
+}
+
+#[uniffi::export]
+fn identity_expr(value: Expr) -> Expr {
+    value
+}
+
+#[uniffi::export]
+fn identity_expr_group(value: ExprGroup) -> ExprGroup {
+    value
+}
+
+// Recursive through a `Vec` in a tuple variant, and through a `HashMap`.
+// Before, the TypeScript for this enum did not compile.
+#[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
+pub enum Nested {
+    List(Vec<Nested>),
+    Dict(HashMap<String, Nested>),
+    Leaf(i32),
+}
+
+#[uniffi::export]
+fn identity_nested(value: Nested) -> Nested {
+    value
+}
+
+#[uniffi::export]
+fn nested_sum(value: Nested) -> i32 {
+    match value {
+        Nested::List(items) => items.into_iter().map(nested_sum).sum(),
+        Nested::Dict(items) => items.into_values().map(nested_sum).sum(),
+        Nested::Leaf(n) => n,
+    }
+}
+
+// Every enum in a cycle is recursive: `Route -> RouteLink -> Route`, and also
+// `Route -> Detour -> RouteLink -> Route`. The uniffi-rs `recursive` flag can
+// miss `Detour`, so ubrn finds the cycles itself.
+#[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
+pub enum Route {
+    Link(RouteLink),
+    Detour(Detour),
+    End,
+}
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct RouteLink {
+    pub next: Option<Box<Route>>,
+}
+
+#[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
+pub enum Detour {
+    Via(RouteLink),
+}
+
+#[uniffi::export]
+fn identity_route(value: Route) -> Route {
+    value
+}
+
+#[uniffi::export]
+fn route_length(value: Route) -> u32 {
+    let next = match value {
+        Route::Link(link) | Route::Detour(Detour::Via(link)) => link.next,
+        Route::End => return 0,
+    };
+    1 + next.map_or(0, |route| route_length(*route))
+}
+
+// A recursive error enum.
+#[derive(uniffi::Error, thiserror::Error, Debug, Clone, PartialEq, Eq)]
+pub enum ChainedError {
+    #[error("root: {message}")]
+    Root { message: String },
+    #[error("wrapped at depth {depth}")]
+    Wrapped {
+        depth: u32,
+        cause: Box<ChainedError>,
+    },
+}
+
+#[uniffi::export]
+fn fail_with_chain(depth: u32) -> Result<(), ChainedError> {
+    let mut error = ChainedError::Root {
+        message: "the cause".into(),
+    };
+    for d in 1..=depth {
+        error = ChainedError::Wrapped {
+            depth: d,
+            cause: Box::new(error),
+        };
+    }
+    Err(error)
 }
 
 uniffi::include_scaffolding!("enum_types");

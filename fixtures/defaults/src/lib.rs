@@ -4,6 +4,11 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/
  */
 
+#[cfg(target_arch = "wasm32")]
+extern crate uniffi_runtime_wasm as _;
+
+use std::collections::HashSet;
+
 #[derive(uniffi::Enum, Debug, PartialEq, Eq, Clone)]
 pub enum Color {
     Red,
@@ -173,6 +178,34 @@ impl ZeroArgObj {
 #[uniffi::export(default(value))]
 pub fn echo_bare_obj_arg(value: std::sync::Arc<ZeroArgObj>) -> std::sync::Arc<ZeroArgObj> {
     value
+}
+
+// Set defaults. uniffi-rs has no literal for a set: the proc-macros write
+// `default = []` as an empty sequence, and the bindings make an empty set.
+#[derive(uniffi::Record, Debug, PartialEq, Eq, Clone)]
+pub struct SetDefaults {
+    #[uniffi(default)]
+    pub names: HashSet<String>,
+    #[uniffi(default = [])]
+    pub numbers: HashSet<u32>,
+    #[uniffi(default = Some([]))]
+    pub maybe_tags: Option<HashSet<String>>,
+    pub required: String,
+}
+
+#[uniffi::export]
+pub fn echo_set_defaults(value: SetDefaults) -> SetDefaults {
+    value
+}
+
+#[uniffi::export(default(values = []))]
+pub fn echo_set_arg(values: HashSet<u32>) -> HashSet<u32> {
+    values
+}
+
+#[uniffi::export(default(values))]
+pub fn echo_bare_set_arg(values: HashSet<String>) -> HashSet<String> {
+    values
 }
 
 uniffi::setup_scaffolding!();

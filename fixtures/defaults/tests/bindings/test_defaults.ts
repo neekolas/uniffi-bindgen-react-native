@@ -4,11 +4,15 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/
  */
 // To run:
+//   cargo test -p uniffi-fixture-defaults -- jsi      (needs Hermes)
 //   cargo test -p uniffi-fixture-defaults -- napi
+//   cargo test -p uniffi-fixture-defaults -- wasm     (needs wasm-bindgen)
+//   cargo test -p uniffi-fixture-defaults -- wasm2    (needs wasm-bindgen)
 
 import theModule, {
   BareDefaults,
   Color,
+  SetDefaults,
   Formatter,
   Greeter,
   Settings,
@@ -22,6 +26,9 @@ import theModule, {
   echoI32,
   echoOptionNone,
   echoOptionSome,
+  echoBareSetArg,
+  echoSetArg,
+  echoSetDefaults,
   echoSettings,
   echoString,
   echoTestCase,
@@ -162,4 +169,44 @@ test("trait method default (callback from JS)", (t) => {
     },
   };
   t.assertEqual("0007", useFormatter(f));
+});
+
+test("record field defaults: sets", (t) => {
+  const v = SetDefaults.create({ required: "r" });
+  t.assertTrue(v.names instanceof Set);
+  t.assertEqual(v.names.size, 0);
+  t.assertTrue(v.numbers instanceof Set);
+  t.assertEqual(v.numbers.size, 0);
+  t.assertTrue(v.maybeTags instanceof Set);
+  t.assertEqual(v.maybeTags!.size, 0);
+
+  const out = echoSetDefaults(v);
+  t.assertEqual(out.names.size, 0);
+  t.assertEqual(out.numbers.size, 0);
+  t.assertEqual(out.maybeTags!.size, 0);
+  t.assertEqual(out.required, "r");
+
+  const full = echoSetDefaults(
+    SetDefaults.create({
+      required: "r",
+      names: new Set(["a"]),
+      numbers: new Set([1, 2]),
+      maybeTags: undefined,
+    }),
+  );
+  t.assertTrue(full.names.has("a"));
+  t.assertEqual(full.numbers.size, 2);
+  t.assertEqual(full.maybeTags, undefined);
+});
+
+test("function arg defaults: sets", (t) => {
+  const numbers = echoSetArg();
+  t.assertTrue(numbers instanceof Set);
+  t.assertEqual(numbers.size, 0);
+  t.assertTrue(echoSetArg(new Set([3])).has(3));
+
+  const names = echoBareSetArg();
+  t.assertTrue(names instanceof Set);
+  t.assertEqual(names.size, 0);
+  t.assertTrue(echoBareSetArg(new Set(["x"])).has("x"));
 });

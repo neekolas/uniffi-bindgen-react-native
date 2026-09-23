@@ -261,6 +261,68 @@ export class FfiConverterArray<Item> extends AbstractFfiConverterByteArray<
   }
 }
 
+/**
+ * A Rust `HashSet<T>`. The wire format is the same as `uniffi_core`: an `i32`
+ * count, then each item.
+ *
+ * A JS `Set` compares items with `SameValueZero`. Numbers, `bigint`s, strings
+ * and flat enums compare by value. Records, tagged enums, objects and byte
+ * arrays compare by reference, so two equal records are two items in a JS
+ * `Set`. Rust removes the duplicates when it reads the set.
+ */
+export class FfiConverterSet<Item> extends AbstractFfiConverterByteArray<
+  Set<Item>
+> {
+  constructor(private itemConverter: FfiConverter<any, Item>) {
+    super();
+  }
+  readFromCursor(c: Cursor): Set<Item> {
+    const size = c.readI32();
+    const set = new Set<Item>();
+    for (let i = 0; i < size; i++) {
+      set.add(this.itemConverter.readFromCursor(c));
+    }
+    return set;
+  }
+  writeIntoCursor(set: Set<Item>, c: Cursor): void {
+    c.writeI32(set.size);
+    for (const item of set) {
+      this.itemConverter.writeIntoCursor(item, c);
+    }
+  }
+  allocationSize(set: Set<Item>): number {
+    let size = 4;
+    for (const item of set) {
+      size += this.itemConverter.allocationSize(item);
+    }
+    return size;
+  }
+}
+
+/**
+ * A Rust `Box<T>`. `uniffi_core` lifts and lowers a `Box<T>` exactly as a
+ * `T`, with the same FFI type, so this converter only calls the converter
+ * for `T`.
+ */
+export class FfiConverterBox<FfiType, T> implements FfiConverter<FfiType, T> {
+  constructor(private innerConverter: FfiConverter<FfiType, T>) {}
+  lift(value: FfiType): T {
+    return this.innerConverter.lift(value);
+  }
+  lower(value: T, alloc: RustBufferAllocator): FfiType {
+    return this.innerConverter.lower(value, alloc);
+  }
+  readFromCursor(c: Cursor): T {
+    return this.innerConverter.readFromCursor(c);
+  }
+  writeIntoCursor(value: T, c: Cursor): void {
+    this.innerConverter.writeIntoCursor(value, c);
+  }
+  allocationSize(value: T): number {
+    return this.innerConverter.allocationSize(value);
+  }
+}
+
 export class FfiConverterMap<K, V> extends AbstractFfiConverterByteArray<
   Map<K, V>
 > {

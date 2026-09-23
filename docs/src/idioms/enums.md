@@ -142,6 +142,42 @@ const dog = MyAnimal.Dog.new("Fido");
 const cat = MyAnimal.Cat.new();
 ```
 
+## Recursive enums and records
+
+An enum or a record can refer to itself: with a `Box<Self>`, or through a `Vec`, an `Option`, a `HashMap` or another enum or record. `Box<T>` is new in uniffi-rs 0.32. A record needs `Option<Box<Self>>` or a collection, as in Rust.
+
+```rust
+#[derive(uniffi::Enum)]
+enum IntList {
+    Cons(i32, Box<IntList>),
+    Nil,
+}
+```
+
+A `Box<T>` is a `T` in Typescript, so `IntList.Cons` has `inner: [number, IntList]`. You make, match and pass a recursive enum in the same way as other enums:
+
+```typescript
+const list = IntList.Cons.new(1, IntList.Cons.new(2, IntList.Nil.new()));
+```
+
+A recursive record is a Typescript object type that refers to itself:
+
+```rust
+#[derive(uniffi::Record)]
+struct LinkedNode {
+    value: i32,
+    next: Option<Box<LinkedNode>>,
+}
+```
+
+```typescript
+const list: LinkedNode = { value: 1, next: { value: 2 } };
+```
+
+For a recursive enum, the generated code declares the variant classes at the top level of the module, and not inside the `IntList` object. The type `IntList` is the union of the variant classes, as for other enums. Before, an enum that holds itself in a tuple variant, for example `N(Vec<Self>)`, did not compile with `strictTypeChecking`, and without it the type of the enum was `any`. Now it has a real type in both modes.
+
+The one difference that you can see: the variant classes have longer names, for example `IntList_Cons_` and not `Cons_`. You see these names in error messages and in `.d.ts` files, and in `constructor.name` at runtime. Use `IntList.Cons`, `InstanceType<typeof IntList.Cons>` and `IntList.Cons.instanceOf`, which do not change.
+
 ## Enums with explicit discriminants
 
 Both [Rust](https://doc.rust-lang.org/reference/items/enumerations.html#discriminants) and Typescript allow you to specify discriminants to enum variants. As [in other bindings for uniffi-rs](https://mozilla.github.io/uniffi-rs/latest/proc_macro/index.html#variant-discriminants), this is supported by `uniffi-bindgen-react-native`. For example,

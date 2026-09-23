@@ -81,6 +81,9 @@ pub(crate) struct TsEnum {
     pub docstring: Option<String>,
     pub is_flat: bool,
     pub is_error: bool,
+    /// The enum refers to itself, maybe through other enums or records.
+    /// See `recursion.rs`.
+    pub is_recursive: bool,
     pub discr_type: Option<String>,
     pub variants: Vec<TsVariant>,
     pub uniffi_traits: Vec<TsUniffiTrait>,
