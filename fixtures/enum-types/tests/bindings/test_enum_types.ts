@@ -17,6 +17,7 @@ import {
   AnimalNamedAssociatedType_Tags,
   AnimalNoReprInt,
   AnimalObject,
+  AnimalRenamedByToml,
   AnimalRecord,
   AnimalSignedInt,
   AnimalUInt,
@@ -30,6 +31,8 @@ import {
   OptionalFields,
   OptionalFields_Tags,
   identityOptionalFields,
+  NoReprColor,
+  ReprColor,
 } from "@/generated/enum_types";
 
 test("Enum discriminant", (t) => {
@@ -53,6 +56,16 @@ test("Enum discriminant", (t) => {
   t.assertEqual(AnimalSignedInt.Koala, -1);
   t.assertEqual(AnimalSignedInt.Wallaby, 0);
   t.assertEqual(AnimalSignedInt.Wombat, 1);
+
+  // Both enums are `Color` in Rust. Only `ReprColor` has a repr type.
+  t.assertEqual(ReprColor.Red, 1);
+  t.assertEqual(ReprColor.Green, 2);
+  t.assertEqual(NoReprColor.Red, 0);
+  t.assertEqual(NoReprColor.Green, 1);
+
+  // Renamed in uniffi.toml.
+  t.assertEqual(AnimalRenamedByToml.Dog, 7);
+  t.assertEqual(AnimalRenamedByToml.Cat, 8);
 });
 
 test("Roundtripping enums with values", (t) => {

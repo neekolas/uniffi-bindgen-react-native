@@ -44,6 +44,36 @@ pub enum AnimalSignedInt {
     Wombat,  // 1
 }
 
+// Two enums with the same Rust name in different modules. `#[uniffi(name)]`
+// gives them different names. Only the first has a repr type, so only the
+// first keeps its literals.
+pub mod repr_color {
+    #[repr(u16)]
+    #[derive(uniffi::Enum)]
+    #[uniffi(name = "ReprColor")]
+    pub enum Color {
+        Red = 1,
+        Green = 2,
+    }
+}
+
+pub mod no_repr_color {
+    #[derive(uniffi::Enum)]
+    #[uniffi(name = "NoReprColor")]
+    pub enum Color {
+        Red = 1,
+        Green = 2,
+    }
+}
+
+// uniffi.toml renames this enum. It keeps its literals.
+#[repr(u32)]
+#[derive(uniffi::Enum)]
+pub enum AnimalTomlRenamed {
+    Dog = 7,
+    Cat, // 8
+}
+
 #[derive(uniffi::Record, Clone)]
 pub struct AnimalRecord {
     value: u8,

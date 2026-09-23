@@ -4,14 +4,17 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/
  */
 
+use std::collections::{HashMap, HashSet};
+
 use anyhow::Result;
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::Args;
 use serde::Deserialize;
 use ubrn_common::{mk_dir, path_or_shim, CrateMetadata, Utf8PathBufExt as _};
 use uniffi_bindgen::{
-    cargo_metadata::CrateConfigSupplier, pipeline::general, BindgenLoader, BindgenPaths,
-    ComponentInterface,
+    cargo_metadata::CrateConfigSupplier,
+    pipeline::{general, initial},
+    BindgenLoader, BindgenPaths, BindgenPathsLayer, ComponentInterface, GlobalConfig,
 };
 
 #[cfg(feature = "wasm")]
@@ -143,15 +146,29 @@ impl SourceArgs {
 impl BindingsArgs {
     pub fn run(&self, manifest_path: Option<&Utf8PathBuf>) -> Result<Vec<ModuleMetadata>> {
         let out = &self.output;
+        let switches = self.switches();
+        let source_path = path_or_shim(&self.source.source)?;
+
+        // Load the pipeline IR first, and check it before any file is written,
+        // so that an unsupported feature leaves no partial output.
+        // The pipeline needs per-crate configs (not the --config override) so that
+        // each namespace gets its own crate's uniffi.toml (e.g. custom type mappings).
+        let pipeline_loader = self.create_pipeline_loader(manifest_path)?;
+        let metadata = load_metadata(&pipeline_loader, &source_path)?;
+        let initial_root = pipeline_loader.load_pipeline_initial_root(&source_path, metadata)?;
+        // The general pipeline gives every enum a discriminant type, so read
+        // which enums declare one explicitly before it runs.
+        let explicit_discr_enums = collect_explicit_discr_enums(&initial_root);
+        let general_root = general::pipeline("react-native").execute(initial_root)?;
+        for namespace in general_root.namespaces.values() {
+            gen_typescript::api_module::reject_unsupported(namespace)?;
+        }
+        let loader = self.create_loader(manifest_path)?;
 
         mk_dir(&out.ts_dir)?;
         mk_dir(&out.cpp_dir)?;
         let ts_dir = out.ts_dir.canonicalize_utf8_or_shim()?;
         let abi_dir = out.cpp_dir.canonicalize_utf8_or_shim()?;
-        let switches = self.switches();
-
-        let source_path = path_or_shim(&self.source.source)?;
-        let loader = self.create_loader(manifest_path)?;
 
         // C++/Rust generation via ComponentInterface
         match &switches.flavor {
@@ -180,21 +197,14 @@ impl BindingsArgs {
         }
 
         // TypeScript generation via pipeline
-        // The pipeline needs per-crate configs (not the --config override) so that
-        // each namespace gets its own crate's uniffi.toml (e.g. custom type mappings).
-        // TODO check this is the desired behavior in uniffi-rs 0.31.x.
-        let pipeline_loader = self.create_pipeline_loader(manifest_path)?;
-        let metadata = load_metadata(&pipeline_loader, &source_path)?;
-        let initial_root = pipeline_loader.load_pipeline_initial_root(&source_path, metadata)?;
-        let general_root = general::pipeline("react-native").execute(initial_root)?;
-
         generate_ffi_from_pipeline(
             &general_root,
             &switches,
             &ts_dir,
             self.lib_resolution.clone(),
         )?;
-        let modules = generate_api_from_pipeline(&general_root, &switches, &ts_dir)?;
+        let modules =
+            generate_api_from_pipeline(&general_root, &explicit_discr_enums, &switches, &ts_dir)?;
         if switches.flavor.supports_index_ts_at_generation() {
             generate_index_from_modules(&modules, &general_root, &switches, &ts_dir, &source_path)?;
         }
@@ -207,14 +217,20 @@ impl BindingsArgs {
     fn create_loader(&self, manifest_path: Option<&Utf8PathBuf>) -> Result<BindgenLoader> {
         let mut bindgen_paths = BindgenPaths::default();
         if let Some(config_path) = &self.source.config {
-            bindgen_paths.add_config_override_layer(config_path.clone());
+            anyhow::ensure!(
+                config_path.is_file(),
+                "Config file not found: {config_path}"
+            );
+            bindgen_paths.add_layer(ConfigOverrideLayer(config_path.clone()));
         }
         let cwd = Utf8PathBuf::from("Cargo.toml");
         let manifest_path = manifest_path.unwrap_or(&cwd);
         let cargo_metadata = CrateMetadata::cargo_metadata(manifest_path)?;
         let config_supplier = CrateConfigSupplier::from(cargo_metadata);
         bindgen_paths.add_layer(config_supplier);
-        Ok(BindgenLoader::new(bindgen_paths))
+        // The uniffi-rs 0.32 global config format is not read yet: `--config`
+        // takes a flat uniffi.toml, as before.
+        Ok(BindgenLoader::new(bindgen_paths, GlobalConfig::default()))
     }
 
     /// Create a loader for the pipeline that uses only per-crate configs.
@@ -230,15 +246,58 @@ impl BindingsArgs {
         let cargo_metadata = CrateMetadata::cargo_metadata(manifest_path)?;
         let config_supplier = CrateConfigSupplier::from(cargo_metadata);
         bindgen_paths.add_layer(config_supplier);
-        Ok(BindgenLoader::new(bindgen_paths))
+        Ok(BindgenLoader::new(bindgen_paths, GlobalConfig::default()))
     }
+}
+
+/// Implements the `--config` flag: every crate uses the same config file.
+///
+/// uniffi-rs 0.32 removed `BindgenPaths::add_config_override_layer`, which did
+/// the same thing. uniffi-rs 0.32 ignores a config path that does not exist,
+/// so `create_loader` checks that the file exists.
+struct ConfigOverrideLayer(Utf8PathBuf);
+
+impl BindgenPathsLayer for ConfigOverrideLayer {
+    fn get_config_path(&self, _crate_name: &str) -> Option<Utf8PathBuf> {
+        Some(self.0.clone())
+    }
+}
+
+/// For each namespace, the enums that declare their discriminant type
+/// (e.g. `#[repr(u8)]`).
+///
+/// Each enum is keyed by the `canonical_name` of its type in the general IR:
+/// `Type{name}`. uniffi-rs makes it from the name after `#[uniffi(name)]` and
+/// before the uniffi.toml rename, so it is unique in the namespace. The Rust
+/// name (`orig_name`) is not unique: two modules can each have an `enum Color`.
+type ExplicitDiscrEnums = HashMap<String, HashSet<String>>;
+
+fn collect_explicit_discr_enums(root: &initial::Root) -> ExplicitDiscrEnums {
+    root.namespaces
+        .iter()
+        .map(|(name, namespace)| {
+            let enums = namespace
+                .type_definitions
+                .iter()
+                .filter_map(|td| match td {
+                    initial::TypeDefinition::Enum(e) if e.discr_type.is_some() => {
+                        Some(format!("Type{}", e.name))
+                    }
+                    _ => None,
+                })
+                .collect();
+            (name.clone(), enums)
+        })
+        .collect()
 }
 
 fn generate_api_from_pipeline(
     general_root: &general::Root,
+    explicit_discr_enums: &ExplicitDiscrEnums,
     switches: &SwitchArgs,
     ts_dir: &Utf8Path,
 ) -> Result<Vec<ModuleMetadata>> {
+    let no_explicit_discr_enums = HashSet::new();
     let mut modules = Vec::new();
     for (name, namespace) in &general_root.namespaces {
         let config = extract_ts_config(namespace)?;
@@ -254,6 +313,9 @@ fn generate_api_from_pipeline(
             namespace,
             switches.flavor.clone(),
             ffi_exports,
+            explicit_discr_enums
+                .get(name)
+                .unwrap_or(&no_explicit_discr_enums),
         )?;
         let code = gen_typescript::generate_api_code_from_ir(api_module)?;
         let path = ts_dir.join(module.ts_filename());

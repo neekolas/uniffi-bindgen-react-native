@@ -323,6 +323,8 @@ For more/better documentation, please see the linked docs.
 
 ```admonish warning
 Because this mirrors other `uniffi-bindgen`s, the `--config` option here is asking for a [`uniffi.toml`](uniffi-toml) file.
+
+uniffi-rs 0.32 adds a global config format for `--config`, with `[crate-roots]`, `[defaults]` and `[crates]` tables. `uniffi-bindgen-react-native` does not read that format yet. Give a flat `uniffi.toml` file, as before.
 ```
 
 This command will generate two typescript files and two C++ files per Uniffi namespace. These are: `namespace.ts`, `namespace-ffi.ts`, `namespace.h`, `namespace.cpp`, substituting `namespace` for names derived from the Rust crate.

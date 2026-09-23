@@ -127,11 +127,12 @@ Full documentation on how to configure your library can be found in [the YAML co
 
 For now, we just want to get started; let's start with an existing Rust crate that has uniffi bindings.
 
+<!-- A maintainer must land https://github.com/jhugman/uniffi-starter/pull/1 as branch jhugman/bump-uniffi-to-0.32 before this example works. That branch pins uniffi 0.32 (lock: 0.32.1). -->
 ```yaml
 ---
 rust:
   repo: https://github.com/jhugman/uniffi-starter.git
-  branch: jhugman/bump-uniffi-to-0.31
+  branch: jhugman/bump-uniffi-to-0.32
   manifestPath: rust/foobar/Cargo.toml
 ```
 
