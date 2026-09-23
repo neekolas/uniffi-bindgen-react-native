@@ -9,5 +9,5 @@
     "moduleResolution": "nodenext",
     "skipLibCheck": false
   },
-  "files": ["consumer.mts", "ffi-type-keys.mts"]
+  "files": ["consumer.mts"]
 }

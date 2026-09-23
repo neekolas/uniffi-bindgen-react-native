@@ -4,14 +4,51 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/
  */
 // Checks `lib.d.ts`, the hand-written types of `lib.js`.
+//
+// The TypeScript compiler API reads what `lib.d.ts` declares, so there is no
+// second list of names to keep in step. Each test compares those names with
+// what `lib.js` gives at runtime.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { FFI_TYPE_KEYS } from "./types/ffi-type-keys.mts";
+import ts from "typescript";
 
 const require = createRequire(import.meta.url);
+const libDts = fileURLToPath(new URL("../lib.d.ts", import.meta.url));
+
+/** The value exports of `lib.d.ts`, and the keys of its `FfiType`. */
+function declared() {
+  const program = ts.createProgram([libDts], {
+    strict: true,
+    noEmit: true,
+    target: ts.ScriptTarget.ES2022,
+    lib: ["lib.es2022.d.ts"],
+    types: [],
+    module: ts.ModuleKind.NodeNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+  });
+  const checker = program.getTypeChecker();
+  const file = program.getSourceFile(libDts);
+  const exports = checker.getExportsOfModule(checker.getSymbolAtLocation(file));
+  const isValue = (symbol) => {
+    const target =
+      symbol.flags & ts.SymbolFlags.Alias
+        ? checker.getAliasedSymbol(symbol)
+        : symbol;
+    return (target.flags & ts.SymbolFlags.Value) !== 0;
+  };
+  const ffiType = exports.find((symbol) => symbol.getName() === "FfiType");
+  assert.ok(ffiType, "lib.d.ts does not declare FfiType");
+  return {
+    values: exports.filter(isValue).map((symbol) => symbol.getName()),
+    ffiTypeKeys: checker
+      .getTypeOfSymbolAtLocation(ffiType, file)
+      .getProperties()
+      .map((property) => property.getName()),
+  };
+}
 
 test("a consumer compiles against lib.d.ts with skipLibCheck false", () => {
   const tsc = require.resolve("typescript/bin/tsc");
@@ -30,5 +67,5 @@ test("a consumer compiles against lib.d.ts with skipLibCheck false", () => {
 
 test("lib.d.ts and lib.js declare the same FfiType keys", () => {
   const { FfiType } = require("../lib.js");
-  assert.deepEqual(Object.keys(FfiType).sort(), [...FFI_TYPE_KEYS].sort());
+  assert.deepEqual(Object.keys(FfiType).sort(), declared().ffiTypeKeys.sort());
 });
