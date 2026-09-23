@@ -174,7 +174,7 @@ struct LinkedNode {
 const list: LinkedNode = { value: 1, next: { value: 2 } };
 ```
 
-For a recursive enum, the generated code declares the variant classes at the top level of the module, and not inside the `IntList` object. The type `IntList` is the union of the variant classes, as for other enums. Before, an enum that holds itself in a tuple variant, for example `N(Vec<Self>)`, did not compile with `tsc`.
+For a recursive enum, the generated code declares the variant classes at the top level of the module, and not inside the `IntList` object. The type `IntList` is the union of the variant classes, as for other enums. Before, an enum that holds itself in a tuple variant, for example `N(Vec<Self>)`, did not compile with `strictTypeChecking`, and without it the type of the enum was `any`. Now it has a real type in both modes.
 
 The one difference that you can see: the variant classes have longer names, for example `IntList_Cons_` and not `Cons_`. You see these names in error messages and in `.d.ts` files, and in `constructor.name` at runtime. Use `IntList.Cons`, `InstanceType<typeof IntList.Cons>` and `IntList.Cons.instanceOf`, which do not change.
 
