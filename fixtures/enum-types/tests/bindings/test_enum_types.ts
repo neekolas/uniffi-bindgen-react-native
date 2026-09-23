@@ -31,6 +31,10 @@ import {
   OptionalFields,
   OptionalFields_Tags,
   identityOptionalFields,
+  OptionalTree,
+  OptionalTree_Tags,
+  identityOptionalTree,
+  optionalTreeSum,
   NoReprColor,
   ReprColor,
   ChainedError,
@@ -250,6 +254,76 @@ test("Variant with Option fields accepts omitted keys and undefined", (t) => {
     t.assertEqual(roundTripped.inner.maybeRecord?.value, 7);
   } else {
     t.fail("expected Named");
+  }
+});
+
+test("Tuple variant with Option fields accepts undefined", (t) => {
+  // Passing `undefined` is a compile-time check (jsi only: that harness
+  // compiles the tests with strict tsc, which fails if `| undefined` is lost).
+  const v1 = OptionalFields.Unnamed.new(undefined, undefined);
+  const r1 = identityOptionalFields(v1);
+  if (OptionalFields.Unnamed.instanceOf(r1)) {
+    t.assertEqual(r1.inner[0], undefined);
+    t.assertEqual(r1.inner[1], undefined);
+  } else {
+    t.fail("expected Unnamed");
+  }
+
+  // Supplying values roundtrips.
+  const v2 = new OptionalFields.Unnamed(
+    [1, 2, 3],
+    AnimalRecord.create({ value: 9 }),
+  );
+  const r2 = identityOptionalFields(v2);
+  if (OptionalFields.Unnamed.instanceOf(r2)) {
+    const values: number[] | undefined = r2.inner[0];
+    t.assertEqual(values, [1, 2, 3]);
+    t.assertEqual(r2.inner[1]?.value, 9);
+  } else {
+    t.fail("expected Unnamed");
+  }
+});
+
+// `OptionalTree` is recursive through an `Option<Box<Self>>` and an
+// `Option<Vec<Self>>` in a tuple variant.
+function optionalTreeLeaves(tree: OptionalTree | undefined): number[] {
+  if (tree === undefined) {
+    return [];
+  }
+  switch (tree.tag) {
+    case OptionalTree_Tags.Branch: {
+      const [first, rest] = tree.inner;
+      return [
+        ...optionalTreeLeaves(first),
+        ...(rest ?? []).flatMap(optionalTreeLeaves),
+      ];
+    }
+    case OptionalTree_Tags.Leaf:
+      return [tree.inner[0]];
+  }
+}
+
+test("Recursive enum with Option fields in a tuple variant", (t) => {
+  const tree = OptionalTree.Branch.new(OptionalTree.Leaf.new(1), [
+    OptionalTree.Leaf.new(2),
+    OptionalTree.Branch.new(undefined, undefined),
+    OptionalTree.Branch.new(OptionalTree.Leaf.new(3), undefined),
+    OptionalTree.Branch.new(undefined, [OptionalTree.Leaf.new(4)]),
+  ]);
+  t.assertEqual(optionalTreeSum(tree), 10);
+
+  const result = identityOptionalTree(tree);
+  t.assertEqual(optionalTreeSum(result), 10);
+  t.assertEqual(optionalTreeLeaves(result), [1, 2, 3, 4]);
+  if (result.tag === OptionalTree_Tags.Branch) {
+    const empty = result.inner[1]?.[1];
+    t.assertEqual(empty?.tag, OptionalTree_Tags.Branch);
+    if (empty?.tag === OptionalTree_Tags.Branch) {
+      t.assertEqual(empty.inner[0], undefined);
+      t.assertEqual(empty.inner[1], undefined);
+    }
+  } else {
+    t.fail("expected Branch");
   }
 });
 

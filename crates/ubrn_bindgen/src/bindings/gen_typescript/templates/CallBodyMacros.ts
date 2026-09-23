@@ -373,6 +373,15 @@ console.debug(`-- {{ prefix }}{{ middle }}{{ suffix }}`);
 {{ field.name }}{% if field.is_optional %}?{% endif %}: {{ field.ts_type }}
 {%- endmacro %}
 
+{#-
+  Render the type of a field that has no name, in a tuple variant: `T | undefined`
+  when optional, else `T`. `field.ts_type` does not include `| undefined`, because
+  a named field uses `?:` for it.
+-#}
+{%- macro nameless_field_type(field) -%}
+{{ field.ts_type }}{% if field.is_optional %} | undefined{% endif %}
+{%- endmacro %}
+
 {#- Variant inner type shape: Readonly<{ name: Type; ... }> or Readonly<[Type, ...]>. -#}
 {%- macro variant_inner_type(variant) %}
 Readonly<{%- if !variant.has_nameless_fields %}{
@@ -383,7 +392,7 @@ Readonly<{%- if !variant.has_nameless_fields %}{
 {%- else %}
 [
 {%-   for field in variant.fields %}
-{{-     field.ts_type }}
+{%-     call nameless_field_type(field) %}
 {%-     if !loop.last %}, {% endif -%}
 {%- endfor %}
 ]
@@ -395,7 +404,7 @@ Readonly<{%- if !variant.has_nameless_fields %}{
 {%- if !variant.has_nameless_fields %}
 inner: { {%- for field in variant.fields %}{% call field_decl(field) %}{%- if !loop.last %}; {% endif %}{%- endfor %} }
 {%- else %}
-{%- for field in variant.fields %}v{{ loop.index0 }}: {{ field.ts_type }}{%- if let Some(dv) = field.default_value %} = {{ dv }}{%- endif %}{%- if !loop.last %}, {% endif %}{%- endfor %}
+{%- for field in variant.fields %}v{{ loop.index0 }}: {% call nameless_field_type(field) %}{%- if let Some(dv) = field.default_value %} = {{ dv }}{%- endif %}{%- if !loop.last %}, {% endif %}{%- endfor %}
 {%- endif %}
 {%- endmacro %}
 

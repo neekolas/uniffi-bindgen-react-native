@@ -153,6 +153,7 @@ pub(crate) enum OptionalFields {
         maybe_string: Option<String>,
         maybe_record: Option<AnimalRecord>,
     },
+    Unnamed(Option<Vec<i32>>, Option<AnimalRecord>),
     Empty,
 }
 
@@ -286,6 +287,34 @@ fn route_length(value: Route) -> u32 {
         Route::End => return 0,
     };
     1 + next.map_or(0, |route| route_length(*route))
+}
+
+// A recursive enum with `Option` fields in a tuple variant. Before, the
+// TypeScript for this enum did not compile with `strictTypeChecking`.
+#[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
+pub enum OptionalTree {
+    Branch(Option<Box<OptionalTree>>, Option<Vec<OptionalTree>>),
+    Leaf(i32),
+}
+
+#[uniffi::export]
+fn identity_optional_tree(value: OptionalTree) -> OptionalTree {
+    value
+}
+
+#[uniffi::export]
+fn optional_tree_sum(value: OptionalTree) -> i32 {
+    match value {
+        OptionalTree::Branch(first, rest) => {
+            first.map_or(0, |tree| optional_tree_sum(*tree))
+                + rest
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(optional_tree_sum)
+                    .sum::<i32>()
+        }
+        OptionalTree::Leaf(n) => n,
+    }
 }
 
 // A recursive error enum.
