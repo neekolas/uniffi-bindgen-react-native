@@ -50,12 +50,17 @@ impl CoreTypeUses {
         uses
     }
 
+    /// Check each identifier in the type, so that a core type inside
+    /// another type, for example `Array<UniffiGcObject>`, is also found.
     fn add(&mut self, type_name: &str) {
-        match type_name {
-            "UniffiRustCallStatus" => self.rust_call_status = true,
-            "UniffiGcObject" => self.gc_object = true,
-            t if t.starts_with("UniffiResult<") => self.result = true,
-            _ => {}
+        let is_ident_char = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
+        for name in type_name.split(|c: char| !is_ident_char(c)) {
+            match name {
+                "UniffiRustCallStatus" => self.rust_call_status = true,
+                "UniffiGcObject" => self.gc_object = true,
+                "UniffiResult" => self.result = true,
+                _ => {}
+            }
         }
     }
 
@@ -184,5 +189,24 @@ mod tests {
         })];
         let uses = CoreTypeUses::of(&[], &definitions);
         assert!(uses.rust_call_status && !uses.gc_object && !uses.result);
+    }
+
+    #[test]
+    fn core_type_uses_finds_types_inside_other_types() {
+        let uses_of = |type_name: &str| {
+            let functions = [FfiFunctionDecl {
+                name: "f".into(),
+                arguments: vec![],
+                return_type: Some(type_name.into()),
+            }];
+            let uses = CoreTypeUses::of(&functions, &[]);
+            (uses.rust_call_status, uses.gc_object, uses.result)
+        };
+        assert_eq!(uses_of("Array<UniffiRustCallStatus>"), (true, false, false));
+        assert_eq!(uses_of("UniffiGcObject | undefined"), (false, true, false));
+        assert_eq!(uses_of("Promise<UniffiResult<void>>"), (false, false, true));
+        assert_eq!(uses_of("UniffiResult<UniffiGcObject>"), (false, true, true));
+        // A longer name that starts with a core name is not a use.
+        assert_eq!(uses_of("UniffiResultU8"), (false, false, false));
     }
 }

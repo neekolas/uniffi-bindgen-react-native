@@ -6,15 +6,28 @@
 {%- if !module.strict_type_checking %}
 // @ts-nocheck
 {%- endif %}
-{#- Import a type only when this file uses it. The future types are used
-    only by the JSI checks at the end of the file. #}
-{%- if module.is_jsi || module.core_types.any() %}
+{#- Import a type only when this file uses it. #}
+{%- if !module.is_jsi && module.core_types.any() %}
+
+import type {
+  {%- if module.core_types.rust_call_status %}
+  UniffiRustCallStatus,
+  {%- endif %}
+  {%- if module.core_types.gc_object %}
+  UniffiGcObject,
+  {%- endif %}
+  {%- if module.core_types.result %}
+  UniffiResult,
+  {%- endif %}
+} from '@ubjs/core';
+{%- endif %}
+{%- if module.is_jsi %}
 
 import {
-  {%- if module.is_jsi && (module.has_continuation_callback || module.has_foreign_future) %}
+  {%- if module.has_continuation_callback || module.has_foreign_future %}
   type StructuralEquality as UniffiStructuralEquality,
   {%- endif %}
-  {%- if module.is_jsi && module.has_foreign_future %}
+  {%- if module.has_foreign_future %}
   type UniffiForeignFuture as RuntimeUniffiForeignFuture,
   {%- endif %}
   {%- if module.core_types.rust_call_status %}
@@ -23,15 +36,13 @@ import {
   {%- if module.core_types.gc_object %}
   type UniffiGcObject,
   {%- endif %}
-  {%- if module.is_jsi && module.has_continuation_callback %}
+  {%- if module.has_continuation_callback %}
   type UniffiRustFutureContinuationCallback as RuntimeUniffiRustFutureContinuationCallback,
   {%- endif %}
   {%- if module.core_types.result %}
   type UniffiResult,
   {%- endif %}
  } from '@ubjs/core';
-{%- endif %}
-{%- if module.is_jsi %}
 
 interface NativeModuleInterface {
     {%- for func in module.functions %}

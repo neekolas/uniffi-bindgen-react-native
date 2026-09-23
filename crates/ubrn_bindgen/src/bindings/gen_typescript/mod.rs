@@ -5,6 +5,8 @@
  */
 pub(crate) mod api_module;
 mod config;
+#[cfg(test)]
+mod ffi_import_tests;
 pub(crate) mod ffi_module;
 pub(crate) mod ffi_module_player;
 mod type_mapping;
