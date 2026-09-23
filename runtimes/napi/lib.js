@@ -9,30 +9,41 @@ const {
   ResolveLibPathError,
 } = require("./typescript/dist/resolve-lib.js");
 
+const FfiType = {
+  UInt8: { tag: "UInt8" },
+  Int8: { tag: "Int8" },
+  UInt16: { tag: "UInt16" },
+  Int16: { tag: "Int16" },
+  UInt32: { tag: "UInt32" },
+  Int32: { tag: "Int32" },
+  UInt64: { tag: "UInt64" },
+  Int64: { tag: "Int64" },
+  Float32: { tag: "Float32" },
+  Float64: { tag: "Float64" },
+  Handle: { tag: "Handle" },
+  RustBuffer: { tag: "RustBuffer" },
+  ForeignBytes: { tag: "ForeignBytes" },
+  RustCallStatus: { tag: "RustCallStatus" },
+  VoidPointer: { tag: "VoidPointer" },
+  Void: { tag: "Void" },
+  Callback: (name) => ({ tag: "Callback", name }),
+  Struct: (name) => ({ tag: "Struct", name }),
+  Reference: (inner) => ({ tag: "Reference", inner }),
+  MutReference: (inner) => ({ tag: "MutReference", inner }),
+};
+
 module.exports = {
   ...native,
   resolveLibPath,
   ResolveLibPathError,
-  FfiType: {
-    UInt8: { tag: "UInt8" },
-    Int8: { tag: "Int8" },
-    UInt16: { tag: "UInt16" },
-    Int16: { tag: "Int16" },
-    UInt32: { tag: "UInt32" },
-    Int32: { tag: "Int32" },
-    UInt64: { tag: "UInt64" },
-    Int64: { tag: "Int64" },
-    Float32: { tag: "Float32" },
-    Float64: { tag: "Float64" },
-    Handle: { tag: "Handle" },
-    RustBuffer: { tag: "RustBuffer" },
-    ForeignBytes: { tag: "ForeignBytes" },
-    RustCallStatus: { tag: "RustCallStatus" },
-    VoidPointer: { tag: "VoidPointer" },
-    Void: { tag: "Void" },
-    Callback: (name) => ({ tag: "Callback", name }),
-    Struct: (name) => ({ tag: "Struct", name }),
-    Reference: (inner) => ({ tag: "Reference", inner }),
-    MutReference: (inner) => ({ tag: "MutReference", inner }),
-  },
+  FfiType,
 };
+
+// Node ESM finds the named exports of this file with cjs-module-lexer. The
+// lexer does not see names in the spread above, so assign each value that
+// `lib.d.ts` declares again, in a form that the lexer finds. Then
+// `import { FfiType } from "@ubjs/node"` works.
+module.exports.UniffiNativeModule = native.UniffiNativeModule;
+module.exports.resolveLibPath = resolveLibPath;
+module.exports.ResolveLibPathError = ResolveLibPathError;
+module.exports.FfiType = FfiType;

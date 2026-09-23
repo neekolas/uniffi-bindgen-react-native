@@ -69,3 +69,18 @@ test("lib.d.ts and lib.js declare the same FfiType keys", () => {
   const { FfiType } = require("../lib.js");
   assert.deepEqual(Object.keys(FfiType).sort(), declared().ffiTypeKeys.sort());
 });
+
+// Node ESM finds the named exports of a CommonJS module with
+// cjs-module-lexer. A name that the lexer does not find compiles, because
+// `lib.d.ts` declares it, but `import { name }` fails at runtime.
+test("Node ESM finds every value export that lib.d.ts declares", async () => {
+  const { values } = declared();
+  assert.ok(values.includes("FfiType"), `unexpected exports: ${values}`);
+  const esm = await import("../lib.js");
+  const cjs = require("../lib.js");
+  const missing = values.filter((name) => !Object.hasOwn(esm, name));
+  assert.deepEqual(missing, [], "named exports that Node ESM does not find");
+  for (const name of values) {
+    assert.equal(esm[name], cjs[name], `ESM and CommonJS differ for ${name}`);
+  }
+});
