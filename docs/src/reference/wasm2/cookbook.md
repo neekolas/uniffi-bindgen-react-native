@@ -202,7 +202,7 @@ Each worker gets its own linear memory, its own Rust-side state, and its own cop
 
 Records, strings and `Vec<u8>` cross the boundary as a serialised buffer. The generated call sites ask the player for wasm memory up front and write the payload straight into it, so a `Vec<u8>` argument costs one copy — the write — rather than a JavaScript array followed by a copy into wasm. Returns work the same way in reverse: the player hands the generated code a view aliasing wasm memory, the converter reads it, and a `finally` frees the allocation even when the conversion throws.
 
-A `&[u8]` argument also costs one copy. Rust cannot read JavaScript memory, so the player copies the `Uint8Array` into wasm memory, and frees the copy after the call. Take `&[u8]` when Rust only reads the bytes during the call; there is no serialised buffer to build.
+A `&[u8]` argument also costs one copy. Rust cannot read JavaScript memory, so the player copies the `Uint8Array` into wasm memory, and frees the copy after the call. Take `&[u8]` when Rust only reads the bytes during the call; there is no serialised buffer to build. Do not pass a view over the module's own wasm memory as a `&[u8]` argument; pass a copy (`view.slice()`). The other arguments of the call can grow wasm memory before the player copies the view, and then Rust gets an empty slice.
 
 Design your Rust API to take that path, and you get it for free:
 

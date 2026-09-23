@@ -34,9 +34,13 @@ A `&[u8]` argument is borrowed by Rust for one call. Rust must not keep the slic
 | - | - | - | - | - |
 | How Rust gets the bytes | A pointer into the JS buffer, no copy | A pointer into the JS buffer, no copy | One copy into wasm memory | One copy into wasm memory, freed after the call |
 | A view over a `SharedArrayBuffer` | Copied first (Hermes has no `SharedArrayBuffer`) | Copied first | Copied | Copied |
-| A `Uint8Array` that is detached before the call | Empty slice | Empty slice | `TypeError` | Empty slice |
-| The buffer is detached or shrunk by JS that runs while the arguments are converted (for example a getter) | Empty slice | Empty slice | Not possible | Not possible |
+| A `Uint8Array` that is detached before the call | Empty slice (1) | Empty slice | `TypeError` | Empty slice |
+| The buffer is detached or shrunk by JS that runs while the arguments are converted (for example a getter on another argument) | Empty slice (1) | Empty slice | `TypeError` | Empty slice |
+| A view over the module's own wasm memory | Not applicable | Not applicable | `TypeError` if copying this argument or an earlier argument grows wasm memory; otherwise it works. Pass a copy (`view.slice()`) | Can be an empty slice, see (2) |
 | JS changes, transfers, detaches or resizes the buffer while Rust runs (for example from a callback that Rust calls) | **Not allowed:** Rust can read freed memory | **Not allowed:** Rust can read freed memory | Rust does not see it | Rust does not see it |
+
+1. Plain JS cannot detach an `ArrayBuffer` on Hermes today. Only native code can.
+2. On `wasm2`, an owned argument (such as `Vec<u8>` or a `String`) is written into wasm memory before the call, and that can grow wasm memory. Growing detaches every view over the old wasm memory. So if a `&[u8]` argument is a view over the module's own wasm memory, and the same call also takes an owned argument, Rust can get an empty slice. On `web` it throws a `TypeError` instead of giving an empty slice. Do not pass a view over the module's own wasm memory as a `&[u8]` argument: pass a copy (`view.slice()`).
 
 With the default `ArrayBuffer` type, the bindings make a `Uint8Array` view of the argument, and a detached `ArrayBuffer` throws a `TypeError` on every flavor.
 

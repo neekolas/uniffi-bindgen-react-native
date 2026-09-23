@@ -183,7 +183,9 @@ function planArg(t: FfiTypeDesc): ArgPlan {
         // Check the value, and copy a view over wasm memory to the JS heap.
         // This runs for every arg before the first `alloc`: an `alloc` can
         // grow wasm memory, and that detaches every view over wasm memory,
-        // also the view of a later arg.
+        // also the view of a later arg. Known limit: an owned arg lowered with
+        // `rustbuffer_alloc` before dispatch can already have detached the
+        // view (see docs/src/idioms/common-types.md, "Borrowed byte arrays").
         beforeAlloc: (ctx, v: Uint8Array) => {
           if (!(v instanceof Uint8Array)) {
             throw new Error(
