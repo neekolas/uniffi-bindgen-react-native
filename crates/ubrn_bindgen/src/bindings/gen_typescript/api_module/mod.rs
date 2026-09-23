@@ -14,6 +14,8 @@ mod builders;
 mod docstring;
 mod nodes;
 mod recursion;
+#[cfg(test)]
+mod test_metadata;
 mod type_helpers;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -466,7 +468,8 @@ impl TsApiModule {
 
         // Defer wrapper FfiConverters (Optional/Sequence/Set/Box/Map) until after base types
         // to avoid temporal-dead-zone errors where a wrapper references a converter
-        // that hasn't been initialised yet.
+        // that hasn't been initialised yet. A custom type is also deferred when its
+        // builtin converter is deferred or comes later.
         let mut deferred_wrappers: Vec<DeferredWrapper> = Vec::new();
         // The canonical names of the type definitions before this one.
         let mut seen: HashSet<&str> = HashSet::new();
@@ -831,20 +834,15 @@ fn reject_async_borrowed_bytes(namespace: &general::Namespace) -> anyhow::Result
 
 #[cfg(test)]
 mod borrowed_bytes_tests {
+    use super::test_metadata::{namespace, CRATE};
     use super::*;
-    use uniffi_bindgen::pipeline::initial::UniffiMetaConverter;
-    use uniffi_meta::{FnMetadata, FnParamMetadata, Metadata, NamespaceMetadata, Type};
+    use uniffi_meta::{FnMetadata, FnParamMetadata, Metadata, Type};
 
     /// Runs one exported function through the same pipeline that `cli.rs`
     /// uses, then through `reject_unsupported`.
     fn check_function(is_async: bool, ty: Type, by_ref: bool) -> anyhow::Result<()> {
-        let mut converter = UniffiMetaConverter::default();
-        converter.add_metadata_item(Metadata::Namespace(NamespaceMetadata {
-            crate_name: "bytes_crate".into(),
-            name: "bytes_crate".into(),
-        }))?;
-        converter.add_metadata_item(Metadata::Func(FnMetadata {
-            module_path: "bytes_crate".into(),
+        let namespace = namespace(vec![Metadata::Func(FnMetadata {
+            module_path: CRATE.into(),
             name: "take_bytes".into(),
             orig_name: None,
             is_async,
@@ -859,9 +857,8 @@ mod borrowed_bytes_tests {
             throws: None,
             checksum: Some(0),
             docstring: None,
-        }))?;
-        let root = general::pipeline("react-native").execute(converter.try_into_initial_ir()?)?;
-        reject_unsupported(&root.namespaces["bytes_crate"])
+        })])?;
+        reject_unsupported(&namespace)
     }
 
     #[test]
@@ -949,99 +946,11 @@ mod deferred_wrapper_tests {
     /// Runs metadata for one crate through the general pipeline, as `cli.rs`
     /// does, and checks the order of the converters.
     mod custom_types_in_a_cycle {
+        use super::super::test_metadata::*;
         use super::*;
-        use uniffi_bindgen::pipeline::initial::UniffiMetaConverter;
-        use uniffi_meta::{
-            CustomTypeMetadata, EnumMetadata, EnumShape, FieldMetadata, Metadata,
-            NamespaceMetadata, RecordMetadata, Type, VariantMetadata,
-        };
+        use uniffi_meta::Type;
 
-        const CRATE: &str = "cycle_crate";
-
-        fn field(name: &str, ty: Type) -> FieldMetadata {
-            FieldMetadata {
-                name: name.into(),
-                orig_name: None,
-                ty,
-                default: None,
-                docstring: None,
-            }
-        }
-
-        fn record(name: &str, fields: Vec<Type>) -> Metadata {
-            Metadata::Record(RecordMetadata {
-                module_path: CRATE.into(),
-                name: name.into(),
-                orig_name: None,
-                remote: false,
-                fields: fields
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, ty)| field(&format!("f{i}"), ty))
-                    .collect(),
-                docstring: None,
-            })
-        }
-
-        fn enum_(name: &str, variants: Vec<Vec<Type>>) -> Metadata {
-            Metadata::Enum(EnumMetadata {
-                module_path: CRATE.into(),
-                name: name.into(),
-                orig_name: None,
-                shape: EnumShape::Enum,
-                remote: false,
-                variants: variants
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, fields)| VariantMetadata {
-                        name: format!("V{i}"),
-                        orig_name: None,
-                        discr: None,
-                        fields: fields
-                            .into_iter()
-                            .enumerate()
-                            .map(|(j, ty)| field(&format!("f{j}"), ty))
-                            .collect(),
-                        docstring: None,
-                    })
-                    .collect(),
-                discr_type: None,
-                non_exhaustive: false,
-                docstring: None,
-            })
-        }
-
-        fn custom(name: &str, builtin: Type) -> (Metadata, Type) {
-            let metadata = Metadata::CustomType(CustomTypeMetadata {
-                module_path: CRATE.into(),
-                name: name.into(),
-                orig_name: None,
-                builtin: builtin.clone(),
-                docstring: None,
-            });
-            let ty = Type::Custom {
-                module_path: CRATE.into(),
-                name: name.into(),
-                builtin: Box::new(builtin),
-            };
-            (metadata, ty)
-        }
-
-        fn record_ty(name: &str) -> Type {
-            Type::Record {
-                module_path: CRATE.into(),
-                name: name.into(),
-            }
-        }
-
-        fn enum_ty(name: &str) -> Type {
-            Type::Enum {
-                module_path: CRATE.into(),
-                name: name.into(),
-            }
-        }
-
-        fn namespace() -> anyhow::Result<general::Namespace> {
+        fn cycles() -> anyhow::Result<general::Namespace> {
             // Custom over a record in the cycle `Inner -> Vec<E> -> E ->
             // Wrapped -> Inner`, and a custom type over that custom type.
             let (wrapped, wrapped_ty) = custom("Wrapped", record_ty("Inner"));
@@ -1053,47 +962,55 @@ mod deferred_wrapper_tests {
             // Custom types that are not in a cycle.
             let (plain_ref, plain_ref_ty) = custom("PlainRef", record_ty("Plain"));
             let (num, num_ty) = custom("Num", Type::Int32);
-            let items = vec![
-                Metadata::Namespace(NamespaceMetadata {
-                    crate_name: CRATE.into(),
-                    name: CRATE.into(),
-                }),
+            namespace(vec![
                 record(
                     "Inner",
-                    vec![Type::Sequence {
-                        inner_type: Box::new(enum_ty("E")),
-                    }],
+                    vec![field(
+                        "e",
+                        Type::Sequence {
+                            inner_type: Box::new(enum_ty("E")),
+                        },
+                    )],
                 ),
-                enum_("E", vec![vec![wrapped_ty], vec![rewrapped_ty], vec![]]),
+                enum_(
+                    "E",
+                    vec![
+                        variant("W", vec![wrapped_ty]),
+                        variant("R", vec![rewrapped_ty]),
+                        variant("L", vec![]),
+                    ],
+                ),
                 wrapped,
                 rewrapped,
                 enum_(
                     "Shape",
                     vec![
-                        vec![Type::Map {
-                            key_type: Box::new(Type::String),
-                            value_type: Box::new(shape_ref_ty.clone()),
-                        }],
-                        vec![Type::Optional {
-                            inner_type: Box::new(Type::Box {
-                                inner_type: Box::new(shape_ref_ty),
-                            }),
-                        }],
+                        variant(
+                            "Group",
+                            vec![Type::Map {
+                                key_type: Box::new(Type::String),
+                                value_type: Box::new(shape_ref_ty.clone()),
+                            }],
+                        ),
+                        variant(
+                            "Framed",
+                            vec![Type::Optional {
+                                inner_type: Box::new(Type::Box {
+                                    inner_type: Box::new(shape_ref_ty),
+                                }),
+                            }],
+                        ),
                     ],
                 ),
                 shape_ref,
-                record("Plain", vec![Type::Int32]),
+                record("Plain", vec![field("x", Type::Int32)]),
                 plain_ref,
                 num,
-                record("UsesPlain", vec![plain_ref_ty, num_ty]),
-            ];
-            let mut converter = UniffiMetaConverter::default();
-            for item in items {
-                converter.add_metadata_item(item)?;
-            }
-            let root =
-                general::pipeline("react-native").execute(converter.try_into_initial_ir()?)?;
-            Ok(root.namespaces[CRATE].clone())
+                record(
+                    "UsesPlain",
+                    vec![field("p", plain_ref_ty), field("n", num_ty)],
+                ),
+            ])
         }
 
         /// The converter that each definition makes, and the converters that
@@ -1116,7 +1033,7 @@ mod deferred_wrapper_tests {
 
         #[test]
         fn each_custom_type_comes_after_its_builtin_converter() -> anyhow::Result<()> {
-            let namespace = namespace()?;
+            let namespace = cycles()?;
 
             // Without this, the test does not check anything: uniffi-rs puts
             // these custom types before their builtin types.
