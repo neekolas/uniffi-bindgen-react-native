@@ -230,6 +230,40 @@ fn identity_expr_group(value: ExprGroup) -> ExprGroup {
     value
 }
 
+// Every enum in a cycle is recursive: `Route -> RouteLink -> Route`, and also
+// `Route -> Detour -> RouteLink -> Route`. The uniffi-rs `recursive` flag can
+// miss `Detour`, so ubrn finds the cycles itself.
+#[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
+pub enum Route {
+    Link(RouteLink),
+    Detour(Detour),
+    End,
+}
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct RouteLink {
+    pub next: Option<Box<Route>>,
+}
+
+#[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
+pub enum Detour {
+    Via(RouteLink),
+}
+
+#[uniffi::export]
+fn identity_route(value: Route) -> Route {
+    value
+}
+
+#[uniffi::export]
+fn route_length(value: Route) -> u32 {
+    let next = match value {
+        Route::Link(link) | Route::Detour(Detour::Via(link)) => link.next,
+        Route::End => return 0,
+    };
+    1 + next.map_or(0, |route| route_length(*route))
+}
+
 // A recursive error enum.
 #[derive(uniffi::Error, thiserror::Error, Debug, Clone, PartialEq, Eq)]
 pub enum ChainedError {

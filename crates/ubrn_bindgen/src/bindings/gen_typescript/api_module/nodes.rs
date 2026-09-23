@@ -82,7 +82,7 @@ pub(crate) struct TsEnum {
     pub is_flat: bool,
     pub is_error: bool,
     /// The enum refers to itself, maybe through other enums or records.
-    /// uniffi-rs finds these cycles and sets `recursive` in the general IR.
+    /// See `recursion.rs`.
     pub is_recursive: bool,
     pub discr_type: Option<String>,
     pub variants: Vec<TsVariant>,

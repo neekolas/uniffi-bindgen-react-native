@@ -40,6 +40,11 @@ import {
   Expr_Tags,
   IntList,
   IntList_Tags,
+  Detour,
+  Route,
+  Route_Tags,
+  identityRoute,
+  routeLength,
   failWithChain,
   identityExpr,
   identityExprGroup,
@@ -372,6 +377,26 @@ function testRecursiveNarrowing(list: IntList): number {
 test("Recursive enum: narrowing", (t) => {
   t.assertEqual(testRecursiveNarrowing(makeIntList([7])), 7);
   t.assertEqual(testRecursiveNarrowing(makeIntList([])), 0);
+});
+
+test("Every enum in a cycle round trips", (t) => {
+  const route = Route.Link.new({
+    next: Route.Detour.new(
+      Detour.Via.new({ next: Route.Link.new({ next: Route.End.new() }) }),
+    ),
+  });
+  t.assertEqual(routeLength(route), 3);
+  const result = identityRoute(route);
+  t.assertEqual(routeLength(result), 3);
+  t.assertEqual(result.tag, Route_Tags.Link);
+  if (result.tag === Route_Tags.Link) {
+    const next = result.inner[0].next;
+    t.assertEqual(next?.tag, Route_Tags.Detour);
+    if (next?.tag === Route_Tags.Detour) {
+      t.assertTrue(Detour.Via.instanceOf(next.inner[0]));
+    }
+  }
+  t.assertEqual(routeLength(identityRoute(Route.End.new())), 0);
 });
 
 // `Expr` and `ExprGroup` refer to each other, and `Expr` refers to itself.

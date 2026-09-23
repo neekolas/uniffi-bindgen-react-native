@@ -345,6 +345,7 @@ pub(super) fn build_enum(
     config: &Config,
     en: &general::Enum,
     has_explicit_discr: bool,
+    is_recursive: bool,
     flavor: &AbiFlavor,
 ) -> TsEnum {
     let ts_name = rewrite_js_builtins(&en.name.to_upper_camel_case());
@@ -388,7 +389,7 @@ pub(super) fn build_enum(
         docstring,
         is_flat,
         is_error,
-        is_recursive: en.recursive,
+        is_recursive,
         discr_type,
         variants,
         uniffi_traits,

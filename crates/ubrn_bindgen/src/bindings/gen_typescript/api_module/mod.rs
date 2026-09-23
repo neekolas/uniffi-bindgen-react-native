@@ -13,6 +13,7 @@
 mod builders;
 mod docstring;
 mod nodes;
+mod recursion;
 mod type_helpers;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -441,6 +442,7 @@ impl TsApiModule {
             .collect();
 
         let mut string_helper_emitted = false;
+        let recursive_enums = recursion::recursive_enum_names(namespace);
 
         // Defer wrapper FfiConverters (Optional/Sequence/Set/Box/Map) until after base types
         // to avoid temporal-dead-zone errors where a wrapper references a converter
@@ -515,7 +517,8 @@ impl TsApiModule {
                 general::TypeDefinition::Enum(e) => {
                     let has_explicit_discr =
                         explicit_discr_enums.contains(&e.self_type.canonical_name);
-                    let ts_enum = build_enum(config, e, has_explicit_discr, flavor);
+                    let is_recursive = recursive_enums.contains(&e.name);
+                    let ts_enum = build_enum(config, e, has_explicit_discr, is_recursive, flavor);
                     if ts_enum.is_flat && ts_enum.is_error {
                         defs.push(TsTypeDefinition::FlatError(ts_enum));
                     } else if ts_enum.is_flat {
