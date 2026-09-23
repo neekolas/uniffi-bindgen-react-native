@@ -237,12 +237,23 @@ fn tsconfig_paths(fixture_dir: &Utf8Path, flavor: Flavor, resolver: Resolver) ->
 /// The tsconfig goes in `generated/$flavor/`, next to the bindings. It has
 /// the same `paths` as the fixture tsconfig, but `@ubjs/node` resolves to the
 /// published types. It includes all of the generated TypeScript files, also
-/// the files that the test script does not import. The `dom` lib declares
-/// `WebAssembly`, which the wasm runtime uses.
+/// the files that the test script does not import.
+///
+/// The types are those of Node (`@types/node`). The wasm flavors also get the
+/// `dom` lib, because the wasm runtime and the wasm-bindgen output use
+/// `WebAssembly` and `BufferSource`. napi does not get it, so a napi file that
+/// uses a browser global, for example `document`, does not compile.
 pub(crate) fn run_tsc(fixture_dir: &Utf8Path, flavor: Flavor, test_script: &Utf8Path) {
     let entries = tsconfig_paths(fixture_dir, flavor, Resolver::Tsc);
     let test_script = test_script.to_forward_slash();
+    let lib = match flavor {
+        Flavor::Wasm | Flavor::Wasm2 => r#"["es2024", "dom"]"#,
+        Flavor::Jsi | Flavor::Napi => r#"["es2024"]"#,
+    };
 
+    // The tsconfig stays after the test, on purpose: you can run
+    // `tsc --project` on it again to debug a failure. `generated/` is
+    // ignored by git, and each test run deletes it first.
     let tsconfig_path = fixture_dir
         .join("generated")
         .join(flavor.as_str())
@@ -257,7 +268,8 @@ pub(crate) fn run_tsc(fixture_dir: &Utf8Path, flavor: Flavor, test_script: &Utf8
     "strict": true,
     "noEmit": true,
     "target": "es2022",
-    "lib": ["es2024", "dom"],
+    "lib": {lib},
+    "types": ["node"],
     "module": "esnext",
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
