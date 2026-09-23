@@ -258,8 +258,8 @@ test("Variant with Option fields accepts omitted keys and undefined", (t) => {
 });
 
 test("Tuple variant with Option fields accepts undefined", (t) => {
-  // Passing `undefined` is a compile-time check (would fail tsc if
-  // `| undefined` was lost).
+  // Passing `undefined` is a compile-time check (jsi only: that harness
+  // compiles the tests with strict tsc, which fails if `| undefined` is lost).
   const v1 = OptionalFields.Unnamed.new(undefined, undefined);
   const r1 = identityOptionalFields(v1);
   if (OptionalFields.Unnamed.instanceOf(r1)) {
