@@ -9,8 +9,10 @@ import { createRequire } from "node:module";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// `platform` is a `string`, not `NodeJS.Platform`: this type is in the
+// published `.d.ts`, and a project without `@types/node` must compile it.
 interface ProcessLike {
-  platform: NodeJS.Platform;
+  platform: string;
   arch: string;
   report?: { getReport(): { header?: { glibcVersionRuntime?: string } } };
 }
