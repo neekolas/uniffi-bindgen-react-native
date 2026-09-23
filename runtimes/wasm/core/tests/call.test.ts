@@ -465,3 +465,57 @@ test("ForeignBytes: a RustBuffer arg is prepared before alloc grows memory", () 
   dispatch(new Uint8Array([5, 6]), owned);
   assert.deepStrictEqual(seen, [1, 2, 3, 4]);
 });
+
+const TWO_BORROWED_DEF: FunctionDef = {
+  args: [FfiType.ForeignBytes, FfiType.ForeignBytes],
+  ret: FfiType.UInt32,
+  hasRustCallStatus: false,
+};
+
+function recordTwoArgs(memory: Memory, seen: number[][]) {
+  return (p1: number, p2: number) => {
+    for (const p of [p1, p2]) {
+      const fb = readForeignBytes(memory, p);
+      seen.push(Array.from(memory.readBytes(fb.dataPtr, fb.len)));
+    }
+    return 0;
+  };
+}
+
+test("ForeignBytes: two views over wasm memory survive the first alloc", () => {
+  const { wasmMem, memory, ctx } = growingContext();
+  new Uint8Array(wasmMem.buffer).set([1, 2, 3], 2000);
+  new Uint8Array(wasmMem.buffer).set([4, 5, 6], 3000);
+  const a = new Uint8Array(wasmMem.buffer, 2000, 3);
+  const b = new Uint8Array(wasmMem.buffer, 3000, 3);
+  const seen: number[][] = [];
+  specializeFunction(ctx, recordTwoArgs(memory, seen), TWO_BORROWED_DEF)(a, b);
+  assert.deepStrictEqual(seen, [
+    [1, 2, 3],
+    [4, 5, 6],
+  ]);
+});
+
+test("ForeignBytes: one view over wasm memory, passed twice", () => {
+  const { wasmMem, memory, ctx } = growingContext();
+  new Uint8Array(wasmMem.buffer).set([7, 8, 9], 2000);
+  const a = new Uint8Array(wasmMem.buffer, 2000, 3);
+  const seen: number[][] = [];
+  specializeFunction(ctx, recordTwoArgs(memory, seen), TWO_BORROWED_DEF)(a, a);
+  assert.deepStrictEqual(seen, [
+    [7, 8, 9],
+    [7, 8, 9],
+  ]);
+});
+
+test("ForeignBytes: a view longer than i32::MAX is an error, before any alloc", () => {
+  const { ctx, allocs } = growingContext();
+  const tooLong = new Uint8Array(1);
+  Object.defineProperty(tooLong, "byteLength", { get: () => 2 ** 31 });
+  const dispatch = specializeFunction(ctx, () => 0, TWO_BORROWED_DEF);
+  assert.throws(
+    () => dispatch(new Uint8Array([1]), tooLong),
+    /longer than i32::MAX/,
+  );
+  assert.deepStrictEqual(allocs, []);
+});

@@ -73,6 +73,9 @@ interface ArgPlan extends ScratchSlot {
   // detaches every view over the old memory, such as a lowered `RustBuffer`
   // arg. So the dispatcher prepares these args after all the others.
   allocates?: boolean;
+  // Runs for this arg before any arg is prepared, so before any `alloc`.
+  // Returns the value to give to `prepare`.
+  beforeAlloc?: (ctx: DispatchContext, jsArg: any) => any;
 }
 
 interface RetSlot extends ScratchSlot {
@@ -114,6 +117,8 @@ function retSlot(t: FfiTypeDesc): RetSlot {
     ? { hasSret: true, ...RUST_BUFFER_SLOT }
     : { hasSret: false, ...SCALAR_SLOT };
 }
+
+const I32_MAX = 0x7fffffff;
 
 const align = (off: number, a: number) => (off + (a - 1)) & ~(a - 1);
 
@@ -175,16 +180,23 @@ function planArg(t: FfiTypeDesc): ArgPlan {
       return {
         ...argSlot(t),
         allocates: true,
-        prepare: (ctx, base, v: Uint8Array, cleanups) => {
+        // Check the value, and copy a view over wasm memory to the JS heap.
+        // This runs for every arg before the first `alloc`: an `alloc` can
+        // grow wasm memory, and that detaches every view over wasm memory,
+        // also the view of a later arg.
+        beforeAlloc: (ctx, v: Uint8Array) => {
           if (!(v instanceof Uint8Array)) {
             throw new Error(
               `A \`&[u8]\` argument must be a Uint8Array, got ${Object.prototype.toString.call(v)}`,
             );
           }
-          // `alloc` can grow wasm memory, and that detaches a view over wasm
-          // memory. So copy such a view out first. A view that is already
-          // detached has `byteLength` 0, and Rust gets an empty slice.
-          const src = v.buffer === ctx.memory.buffer() ? v.slice() : v;
+          if (v.byteLength > I32_MAX) {
+            throw new Error("A `&[u8]` argument is longer than i32::MAX bytes");
+          }
+          return v.buffer === ctx.memory.buffer() ? v.slice() : v;
+        },
+        prepare: (ctx, base, src: Uint8Array, cleanups) => {
+          // A detached view has `byteLength` 0, so Rust gets an empty slice.
           const len = src.byteLength;
           let dataPtr = 0;
           if (len > 0) {
@@ -408,6 +420,7 @@ function buildInterpretedDispatcher(
   );
   // The order to prepare the args in: the ones that can grow wasm memory last.
   const argIndexes = argPlans.map((_, i) => i);
+  const beforeAllocIndexes = argIndexes.filter((i) => argPlans[i].beforeAlloc);
   const prepareOrder = [
     ...argIndexes.filter((i) => !argPlans[i].allocates),
     ...argIndexes.filter((i) => argPlans[i].allocates),
@@ -433,10 +446,14 @@ function buildInterpretedDispatcher(
     if (def.hasRustCallStatus)
       writeRustCallStatusZero(ctx.memory, base + statusOff);
 
+    const argValues = userArgs.slice();
+    for (const i of beforeAllocIndexes) {
+      argValues[i] = argPlans[i].beforeAlloc!(ctx, argValues[i]);
+    }
     const argWords: any[] = new Array(argPlans.length);
     for (const i of prepareOrder) {
       const argBase = argOffsets[i] >= 0 ? base + argOffsets[i] : 0;
-      argWords[i] = argPlans[i].prepare(ctx, argBase, userArgs[i], cleanups);
+      argWords[i] = argPlans[i].prepare(ctx, argBase, argValues[i], cleanups);
     }
     const wasmArgs: any[] = [];
     if (retPlan.hasSret) wasmArgs.push(base + sretOff);
