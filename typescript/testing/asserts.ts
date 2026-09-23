@@ -185,7 +185,7 @@ export class AsyncAsserts extends Asserts {
     super();
     let timerId = setTimeout(() => {
       this.fail(`Test '${testName}' timed out`);
-    }, timeout) as unknown as string | number;
+    }, timeout);
     let timerResolve: (value: unknown) => void;
     this.timerPromise = new Promise((resolve, reject) => {
       timerResolve = resolve;
