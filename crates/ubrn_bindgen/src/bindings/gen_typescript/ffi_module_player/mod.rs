@@ -30,6 +30,7 @@ pub fn render_minimal_for_test(lib_resolution: LibResolution, crate_name: &str) 
         structs: Vec::new(),
         typed_functions: Vec::new(),
         typed_definitions: Vec::new(),
+        core_types: Default::default(),
     };
     super::generate_player_lowlevel_code(module).expect("render")
 }

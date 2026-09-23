@@ -17,6 +17,51 @@ pub(crate) struct TsFfiModule {
     pub definitions: Vec<FfiDefinitionDecl>,
     pub has_continuation_callback: bool,
     pub has_foreign_future: bool,
+    pub core_types: CoreTypeUses,
+}
+
+/// The `@ubjs/core` types that the declarations of a `-ffi.ts` name.
+/// The templates import a type only when it is named.
+#[derive(Default)]
+pub(crate) struct CoreTypeUses {
+    pub rust_call_status: bool,
+    pub gc_object: bool,
+    pub result: bool,
+}
+
+impl CoreTypeUses {
+    pub(crate) fn of(functions: &[FfiFunctionDecl], definitions: &[FfiDefinitionDecl]) -> Self {
+        let mut uses = Self::default();
+        for func in functions {
+            func.arguments.iter().for_each(|a| uses.add(&a.type_name));
+            func.return_type.iter().for_each(|t| uses.add(t));
+        }
+        for def in definitions {
+            match def {
+                FfiDefinitionDecl::Callback(cb) => {
+                    cb.arguments.iter().for_each(|a| uses.add(&a.type_name));
+                    uses.add(&cb.return_type);
+                }
+                FfiDefinitionDecl::Struct(s) => {
+                    s.fields.iter().for_each(|f| uses.add(&f.type_name))
+                }
+            }
+        }
+        uses
+    }
+
+    fn add(&mut self, type_name: &str) {
+        match type_name {
+            "UniffiRustCallStatus" => self.rust_call_status = true,
+            "UniffiGcObject" => self.gc_object = true,
+            t if t.starts_with("UniffiResult<") => self.result = true,
+            _ => {}
+        }
+    }
+
+    pub(crate) fn any(&self) -> bool {
+        self.rust_call_status || self.gc_object || self.result
+    }
 }
 
 pub(crate) enum FfiExportedName {
@@ -86,4 +131,58 @@ pub(crate) struct FfiStructDecl {
 pub(crate) struct FfiFieldDecl {
     pub name: String,
     pub type_name: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn arg(type_name: &str) -> FfiArgDecl {
+        FfiArgDecl {
+            name: "a".into(),
+            type_name: type_name.into(),
+        }
+    }
+
+    #[test]
+    fn core_type_uses_finds_only_the_named_types() {
+        let none = CoreTypeUses::of(&[], &[]);
+        assert!(!none.any());
+
+        let functions = [FfiFunctionDecl {
+            name: "f".into(),
+            arguments: vec![arg("bigint"), arg("UniffiRustCallStatus")],
+            return_type: Some("number".into()),
+        }];
+        let uses = CoreTypeUses::of(&functions, &[]);
+        assert!(uses.rust_call_status && !uses.gc_object && !uses.result);
+
+        let functions = [FfiFunctionDecl {
+            name: "f".into(),
+            arguments: vec![],
+            return_type: Some("UniffiGcObject".into()),
+        }];
+        let uses = CoreTypeUses::of(&functions, &[]);
+        assert!(!uses.rust_call_status && uses.gc_object && !uses.result);
+
+        let definitions = [FfiDefinitionDecl::Callback(FfiCallbackDecl {
+            exported: false,
+            name: "UniffiCallbackInterfaceClone".into(),
+            arguments: vec![arg("bigint")],
+            return_type: "UniffiResult<void>".into(),
+        })];
+        let uses = CoreTypeUses::of(&[], &definitions);
+        assert!(!uses.rust_call_status && !uses.gc_object && uses.result);
+
+        let definitions = [FfiDefinitionDecl::Struct(FfiStructDecl {
+            exported: true,
+            name: "UniffiForeignFutureResultU8".into(),
+            fields: vec![FfiFieldDecl {
+                name: "call_status".into(),
+                type_name: "UniffiRustCallStatus".into(),
+            }],
+        })];
+        let uses = CoreTypeUses::of(&[], &definitions);
+        assert!(uses.rust_call_status && !uses.gc_object && !uses.result);
+    }
 }
