@@ -349,6 +349,79 @@ impl ImportAccumulator {
     }
 }
 
+/// A converter that `build_type_definitions` writes after the base types.
+struct DeferredWrapper {
+    name: String,
+    inner_names: Vec<String>,
+    def: TsTypeDefinition,
+}
+
+impl DeferredWrapper {
+    fn new<'a>(
+        self_type: &general::TypeNode,
+        inner: impl IntoIterator<Item = &'a general::TypeNode>,
+        def: TsTypeDefinition,
+    ) -> Self {
+        Self {
+            name: self_type.canonical_name.clone(),
+            inner_names: inner
+                .into_iter()
+                .map(|t| t.canonical_name.clone())
+                .collect(),
+            def,
+        }
+    }
+}
+
+/// Puts each deferred converter after the deferred converters that it uses.
+///
+/// Each deferred converter is a `const` that reads its inner converter when
+/// the module loads. If the inner converter comes later, this is a
+/// temporal-dead-zone error.
+///
+/// uniffi-rs sorts the type definitions so that dependencies come first. But
+/// with a recursive type, the cycle can put a converter before its inner
+/// converter: for example, `Optional<Box<Node>>` before `Box<Node>`. This sort
+/// does not change an order that is already correct.
+fn sort_deferred_wrappers(wrappers: Vec<DeferredWrapper>) -> Vec<TsTypeDefinition> {
+    fn visit(
+        i: usize,
+        wrappers: &[DeferredWrapper],
+        index: &HashMap<&str, usize>,
+        visited: &mut [bool],
+        order: &mut Vec<usize>,
+    ) {
+        if visited[i] {
+            return;
+        }
+        visited[i] = true;
+        for inner in &wrappers[i].inner_names {
+            if let Some(&j) = index.get(inner.as_str()) {
+                visit(j, wrappers, index, visited, order);
+            }
+        }
+        order.push(i);
+    }
+
+    let index: HashMap<&str, usize> = wrappers
+        .iter()
+        .enumerate()
+        .map(|(i, w)| (w.name.as_str(), i))
+        .collect();
+    let mut visited = vec![false; wrappers.len()];
+    let mut order = Vec::with_capacity(wrappers.len());
+    for i in 0..wrappers.len() {
+        visit(i, &wrappers, &index, &mut visited, &mut order);
+    }
+
+    let mut defs: Vec<Option<TsTypeDefinition>> =
+        wrappers.into_iter().map(|w| Some(w.def)).collect();
+    order
+        .into_iter()
+        .map(|i| defs[i].take().expect("each index is in the order once"))
+        .collect()
+}
+
 impl TsApiModule {
     fn build_type_definitions(
         config: &Config,
@@ -369,10 +442,10 @@ impl TsApiModule {
 
         let mut string_helper_emitted = false;
 
-        // Defer wrapper FfiConverters (Optional/Sequence/Map) until after base types
+        // Defer wrapper FfiConverters (Optional/Sequence/Set/Box/Map) until after base types
         // to avoid temporal-dead-zone errors where a wrapper references a converter
         // that hasn't been initialised yet.
-        let mut deferred_wrappers: Vec<TsTypeDefinition> = Vec::new();
+        let mut deferred_wrappers: Vec<DeferredWrapper> = Vec::new();
 
         for td in &namespace.type_definitions {
             match td {
@@ -383,19 +456,39 @@ impl TsApiModule {
                     }
                 }
                 general::TypeDefinition::Optional(opt) => {
-                    deferred_wrappers
-                        .push(TsTypeDefinition::SimpleWrapper(build_optional(config, opt)));
+                    deferred_wrappers.push(DeferredWrapper::new(
+                        &opt.self_type,
+                        [&opt.inner],
+                        TsTypeDefinition::SimpleWrapper(build_optional(config, opt)),
+                    ));
                 }
                 general::TypeDefinition::Sequence(seq) => {
-                    deferred_wrappers
-                        .push(TsTypeDefinition::SimpleWrapper(build_sequence(config, seq)));
+                    deferred_wrappers.push(DeferredWrapper::new(
+                        &seq.self_type,
+                        [&seq.inner],
+                        TsTypeDefinition::SimpleWrapper(build_sequence(config, seq)),
+                    ));
                 }
-                // A later PR in the uniffi 0.32 stack adds Set and Box here.
-                general::TypeDefinition::Box(_) | general::TypeDefinition::Set(_) => {
-                    unreachable!("Box and Set are rejected by reject_unsupported")
+                general::TypeDefinition::Set(set) => {
+                    deferred_wrappers.push(DeferredWrapper::new(
+                        &set.self_type,
+                        [&set.inner],
+                        TsTypeDefinition::SimpleWrapper(build_set(config, set)),
+                    ));
+                }
+                general::TypeDefinition::Box(boxed) => {
+                    deferred_wrappers.push(DeferredWrapper::new(
+                        &boxed.self_type,
+                        [&boxed.inner],
+                        TsTypeDefinition::SimpleWrapper(build_box(config, boxed)),
+                    ));
                 }
                 general::TypeDefinition::Map(map) => {
-                    deferred_wrappers.push(TsTypeDefinition::SimpleWrapper(build_map(config, map)));
+                    deferred_wrappers.push(DeferredWrapper::new(
+                        &map.self_type,
+                        [&map.key, &map.value],
+                        TsTypeDefinition::SimpleWrapper(build_map(config, map)),
+                    ));
                 }
                 general::TypeDefinition::Custom(custom) => {
                     let td = TsTypeDefinition::Custom(build_custom_type(config, custom));
@@ -403,9 +496,15 @@ impl TsApiModule {
                         custom.builtin.ty,
                         general::Type::Map { .. }
                             | general::Type::Sequence { .. }
+                            | general::Type::Set { .. }
+                            | general::Type::Box { .. }
                             | general::Type::Optional { .. }
                     ) {
-                        deferred_wrappers.push(td);
+                        deferred_wrappers.push(DeferredWrapper::new(
+                            &custom.self_type,
+                            [&custom.builtin],
+                            td,
+                        ));
                     } else {
                         defs.push(td);
                     }
@@ -445,7 +544,7 @@ impl TsApiModule {
             }
         }
 
-        defs.append(&mut deferred_wrappers);
+        defs.extend(sort_deferred_wrappers(deferred_wrappers));
 
         defs
     }
@@ -647,35 +746,12 @@ fn force_async_error_block(kind: &str, name: &str, methods: &[TsCallable]) -> Op
 }
 
 /// Returns an error if the namespace uses something that this generator cannot
-/// write yet.
+/// write.
 ///
 /// `cli.rs` calls this for every flavour before it writes any file, so an
 /// error leaves no partial output.
 pub(crate) fn reject_unsupported(namespace: &general::Namespace) -> anyhow::Result<()> {
-    reject_unsupported_types(namespace)?;
     reject_async_borrowed_bytes(namespace)
-}
-
-/// uniffi-rs 0.32 added `Box<T>` and `HashSet<T>`. The generators do not
-/// support them yet. The general pipeline adds a type definition for each type
-/// that the API uses, so one check here covers all uses.
-///
-/// A later PR in the uniffi 0.32 stack adds Set and Box, and removes this check.
-fn reject_unsupported_types(namespace: &general::Namespace) -> anyhow::Result<()> {
-    for td in &namespace.type_definitions {
-        let (kind, self_type) = match td {
-            general::TypeDefinition::Box(b) => ("Box", &b.self_type),
-            general::TypeDefinition::Set(s) => ("HashSet", &s.self_type),
-            _ => continue,
-        };
-        anyhow::bail!(
-            "`{kind}` is not yet supported by uniffi-bindgen-react-native \
-            (type `{}` in namespace `{}`)",
-            self_type.canonical_name,
-            namespace.name,
-        );
-    }
-    Ok(())
 }
 
 /// Rust borrows a `&[u8]` or UDL `[ByRef] bytes` argument as `ForeignBytes`
@@ -776,6 +852,69 @@ mod borrowed_bytes_tests {
     #[test]
     fn async_owned_bytes_is_ok() {
         check_function(true, Type::Bytes, false).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod deferred_wrapper_tests {
+    use super::*;
+
+    fn wrapper(name: &str, inner_names: &[&str]) -> DeferredWrapper {
+        DeferredWrapper {
+            name: name.into(),
+            inner_names: inner_names.iter().map(|n| n.to_string()).collect(),
+            def: TsTypeDefinition::SimpleWrapper(TsSimpleWrapper {
+                infra_class: "FfiConverterOptional".into(),
+                ffi_converter_name: format!("FfiConverter{name}"),
+                type_label: name.into(),
+                inner_converters: vec![],
+            }),
+        }
+    }
+
+    fn names(defs: Vec<TsTypeDefinition>) -> Vec<String> {
+        defs.into_iter()
+            .map(|def| match def {
+                TsTypeDefinition::SimpleWrapper(w) => w.type_label,
+                _ => unreachable!(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn inner_converter_moves_first() {
+        // uniffi-rs gives this order for a record `Node` with an
+        // `Option<Box<Node>>` field.
+        let sorted = sort_deferred_wrappers(vec![
+            wrapper("OptionalBoxTypeNode", &["BoxTypeNode"]),
+            wrapper("SequenceString", &["String"]),
+            wrapper("BoxTypeNode", &["TypeNode"]),
+        ]);
+        assert_eq!(
+            names(sorted),
+            ["BoxTypeNode", "OptionalBoxTypeNode", "SequenceString"]
+        );
+    }
+
+    #[test]
+    fn correct_order_does_not_change() {
+        let order = [
+            ("SetString", vec!["String"]),
+            ("OptionalInt32", vec!["Int32"]),
+            ("SequenceSetString", vec!["SetString"]),
+            ("MapStringSetString", vec!["String", "SetString"]),
+            ("OptionalSequenceSetString", vec!["SequenceSetString"]),
+        ];
+        let sorted = sort_deferred_wrappers(
+            order
+                .iter()
+                .map(|(name, inner)| wrapper(name, inner))
+                .collect(),
+        );
+        assert_eq!(
+            names(sorted),
+            order.iter().map(|(name, _)| *name).collect::<Vec<_>>()
+        );
     }
 }
 

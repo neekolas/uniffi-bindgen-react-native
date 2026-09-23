@@ -36,6 +36,24 @@ pub(super) fn build_sequence(config: &Config, seq: &general::SequenceType) -> Ts
     }
 }
 
+pub(super) fn build_set(config: &Config, set: &general::SetType) -> TsSimpleWrapper {
+    TsSimpleWrapper {
+        infra_class: "FfiConverterSet".into(),
+        ffi_converter_name: ffi_converter_name_for(config, &set.self_type),
+        type_label: type_label_for(config, &set.self_type.ty),
+        inner_converters: vec![ffi_converter_name_for(config, &set.inner)],
+    }
+}
+
+pub(super) fn build_box(config: &Config, boxed: &general::BoxedType) -> TsSimpleWrapper {
+    TsSimpleWrapper {
+        infra_class: "FfiConverterBox".into(),
+        ffi_converter_name: ffi_converter_name_for(config, &boxed.self_type),
+        type_label: type_label_for(config, &boxed.self_type.ty),
+        inner_converters: vec![ffi_converter_name_for(config, &boxed.inner)],
+    }
+}
+
 pub(super) fn build_map(config: &Config, map: &general::MapType) -> TsSimpleWrapper {
     TsSimpleWrapper {
         infra_class: "FfiConverterMap".into(),
@@ -142,21 +160,49 @@ fn render_literal(config: &Config, lit: &general::Literal) -> String {
         }
         general::Literal::EmptySequence => "[]".into(),
         general::Literal::EmptyMap => "new Map()".into(),
-        // A later PR in the uniffi 0.32 stack adds Set here.
-        general::Literal::EmptySet => unreachable!("Set is rejected by reject_unsupported"),
+        // The literal does not give the item type. `render_default_value`
+        // writes a typed `Set` when it knows the type.
+        general::Literal::EmptySet => "new Set()".into(),
         general::Literal::None => "undefined".into(),
-        general::Literal::Some { inner } => render_default_value(config, inner),
+        general::Literal::Some { inner } => render_default_value(config, inner, None),
     }
 }
 
-fn render_default_value(config: &Config, dv: &general::DefaultValue) -> String {
-    match dv {
-        general::DefaultValue::Literal(lit_node) => render_literal(config, lit_node),
-        general::DefaultValue::Default(tn) => render_type_default(config, &tn.ty),
+/// `ty` is the type of the field or argument that gets the default value,
+/// when it is known.
+fn render_default_value(
+    config: &Config,
+    dv: &general::DefaultValue,
+    ty: Option<&general::Type>,
+) -> String {
+    use general::{DefaultValue, Literal, Type};
+    match (dv, ty) {
+        (
+            _,
+            Some(
+                Type::Box { inner_type }
+                | Type::Custom {
+                    builtin: inner_type,
+                    ..
+                },
+            ),
+        ) => render_default_value(config, dv, Some(inner_type)),
+        // The proc-macros write `default = []` as an empty sequence, also for
+        // a `HashSet`. A bare `new Set()` has the type `Set<unknown>`, so give
+        // the item type.
+        (
+            DefaultValue::Literal(Literal::EmptySequence | Literal::EmptySet),
+            Some(Type::Set { inner_type }),
+        ) => format!("new Set<{}>()", type_label_for(config, inner_type)),
+        (DefaultValue::Literal(Literal::Some { inner }), Some(Type::Optional { inner_type })) => {
+            render_default_value(config, inner, Some(inner_type))
+        }
+        (DefaultValue::Literal(lit), _) => render_literal(config, lit),
+        (DefaultValue::Default(tn), _) => render_type_default(config, &tn.ty),
     }
 }
 
-fn render_type_default(_config: &Config, ty: &general::Type) -> String {
+fn render_type_default(config: &Config, ty: &general::Type) -> String {
     // Per the uniffi-rs default-values docs, the bare `default` keyword maps
     // each type to its natural zero-value: 0 for numerics, false, empty
     // string/bytes/sequence/map, None for Option, all-defaults for Record,
@@ -179,11 +225,12 @@ fn render_type_default(_config: &Config, ty: &general::Type) -> String {
         general::Type::Optional { .. } => "undefined".into(),
         general::Type::Sequence { .. } => "[]".into(),
         general::Type::Map { .. } => "new Map()".into(),
-        // A later PR in the uniffi 0.32 stack adds Set and Box here.
-        general::Type::Box { .. } | general::Type::Set { .. } => {
-            unreachable!("Box and Set are rejected by reject_unsupported")
+        // A bare `new Set()` has the type `Set<unknown>`, so give the item type.
+        general::Type::Set { inner_type } => {
+            format!("new Set<{}>()", type_label_for(config, inner_type))
         }
-        general::Type::Custom { builtin, .. } => render_type_default(_config, builtin),
+        general::Type::Box { inner_type } => render_type_default(config, inner_type),
+        general::Type::Custom { builtin, .. } => render_type_default(config, builtin),
         general::Type::Record { name, .. } => {
             let name = rewrite_js_builtins(&name.to_upper_camel_case());
             format!("{name}.create({{}})")
@@ -256,7 +303,7 @@ pub(super) fn build_field(config: &Config, field: &general::Field) -> TsField {
     let default_value = field
         .default
         .as_ref()
-        .map(|default| render_default_value(config, default));
+        .map(|default| render_default_value(config, default, Some(&field.ty.ty)));
     let docstring = field.docstring.as_deref().map(format_docstring_indented);
     TsField {
         name,
@@ -432,7 +479,7 @@ pub(super) fn build_arg(config: &Config, arg: &general::Argument) -> TsArg {
         default_value: arg
             .default
             .as_ref()
-            .map(|default| render_default_value(config, default)),
+            .map(|default| render_default_value(config, default, Some(&arg.ty.ty))),
     }
 }
 
@@ -914,5 +961,70 @@ pub(super) fn build_initialization(
         ffi_contract_version_fn,
         checksums,
         initialization_fns,
+    }
+}
+
+#[cfg(test)]
+mod default_value_tests {
+    use super::*;
+
+    fn set_of(inner: general::Type) -> general::Type {
+        general::Type::Set {
+            inner_type: Box::new(inner),
+        }
+    }
+
+    fn literal(lit: general::Literal) -> general::DefaultValue {
+        general::DefaultValue::Literal(lit)
+    }
+
+    #[test]
+    fn empty_literals_for_a_set_make_a_typed_set() {
+        let config = Config::default();
+        let ty = set_of(general::Type::String);
+        for lit in [general::Literal::EmptySet, general::Literal::EmptySequence] {
+            assert_eq!(
+                render_default_value(&config, &literal(lit), Some(&ty)),
+                "new Set<string>()"
+            );
+        }
+    }
+
+    #[test]
+    fn some_empty_literal_for_an_optional_set_makes_a_typed_set() {
+        let config = Config::default();
+        let ty = general::Type::Optional {
+            inner_type: Box::new(set_of(general::Type::UInt32)),
+        };
+        let dv = literal(general::Literal::Some {
+            inner: Box::new(literal(general::Literal::EmptySequence)),
+        });
+        assert_eq!(
+            render_default_value(&config, &dv, Some(&ty)),
+            "new Set<number>()"
+        );
+    }
+
+    #[test]
+    fn empty_sequence_for_a_sequence_is_unchanged() {
+        let config = Config::default();
+        let ty = general::Type::Sequence {
+            inner_type: Box::new(general::Type::String),
+        };
+        let dv = literal(general::Literal::EmptySequence);
+        assert_eq!(render_default_value(&config, &dv, Some(&ty)), "[]");
+    }
+
+    #[test]
+    fn type_default_for_a_set_and_a_box() {
+        let config = Config::default();
+        assert_eq!(
+            render_type_default(&config, &set_of(general::Type::Int64)),
+            "new Set<bigint>()"
+        );
+        let boxed = general::Type::Box {
+            inner_type: Box::new(general::Type::Int32),
+        };
+        assert_eq!(render_type_default(&config, &boxed), "0");
     }
 }
