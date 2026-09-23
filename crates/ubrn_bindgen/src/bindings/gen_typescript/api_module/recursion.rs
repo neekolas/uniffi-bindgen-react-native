@@ -11,7 +11,8 @@
 //! visited before, and it starts from the nodes in `HashMap` order. So an
 //! enum that is in a cycle can be missed, and the result can change from one
 //! run to the next. For example, with `T -> U`, `T -> V`, `V -> U` and
-//! `U -> T`, `V` is sometimes not marked.
+//! `U -> T`, `V` is sometimes not marked. It also does not follow a custom
+//! type to its builtin type, so it misses a cycle through a custom type.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -143,11 +144,260 @@ mod tests {
         }
     }
 
+    fn named(namespace: &str, name: &str) -> (String, String, String) {
+        (namespace.into(), name.into(), name.into())
+    }
+
+    fn record(namespace: &str, name: &str) -> general::Type {
+        let (namespace, name, orig_name) = named(namespace, name);
+        general::Type::Record {
+            namespace,
+            name,
+            orig_name,
+        }
+    }
+
+    fn names_in(ty: &general::Type) -> Vec<String> {
+        let mut names = BTreeSet::new();
+        add_type_names("here", ty, &mut names);
+        names.into_iter().collect()
+    }
+
+    #[test]
+    fn edges_go_through_containers_and_custom_types() {
+        let map = general::Type::Map {
+            key_type: Box::new(record("here", "Key")),
+            value_type: Box::new(general::Type::Box {
+                inner_type: Box::new(record("here", "Value")),
+            }),
+        };
+        assert_eq!(names_in(&map), ["Key", "Value"]);
+
+        let (namespace, name, orig_name) = named("here", "Wrapped");
+        let custom = general::Type::Custom {
+            namespace,
+            name,
+            orig_name,
+            builtin: Box::new(general::Type::Set {
+                inner_type: Box::new(general::Type::Optional {
+                    inner_type: Box::new(general::Type::Sequence {
+                        inner_type: Box::new(record("here", "Inner")),
+                    }),
+                }),
+            }),
+        };
+        assert_eq!(names_in(&custom), ["Inner"]);
+    }
+
+    #[test]
+    fn objects_and_other_namespaces_are_not_edges() {
+        assert!(names_in(&record("elsewhere", "Remote")).is_empty());
+        let (namespace, name, orig_name) = named("here", "Object");
+        let object = general::Type::Interface {
+            namespace,
+            name,
+            orig_name,
+            imp: general::ObjectImpl::Struct,
+        };
+        assert!(names_in(&object).is_empty());
+        assert!(names_in(&general::Type::String).is_empty());
+    }
+
     #[test]
     fn self_cycle_and_no_cycle() {
         assert_eq!(
             reaching(&[("List", &["List"]), ("Leaf", &[]), ("Uses", &["List"])]),
             ["List"]
         );
+    }
+
+    /// Runs metadata for one crate through the general pipeline, as `cli.rs`
+    /// does, and returns the recursive enums that ubrn finds.
+    mod pipeline {
+        use super::super::*;
+        use uniffi_bindgen::pipeline::initial::UniffiMetaConverter;
+        use uniffi_meta::{
+            CustomTypeMetadata, EnumMetadata, EnumShape, FieldMetadata, Metadata,
+            NamespaceMetadata, ObjectImpl, ObjectMetadata, RecordMetadata, Type, VariantMetadata,
+        };
+
+        const CRATE: &str = "rec_crate";
+
+        fn field(name: &str, ty: Type) -> FieldMetadata {
+            FieldMetadata {
+                name: name.into(),
+                orig_name: None,
+                ty,
+                default: None,
+                docstring: None,
+            }
+        }
+
+        fn variant(name: &str, fields: Vec<Type>) -> VariantMetadata {
+            VariantMetadata {
+                name: name.into(),
+                orig_name: None,
+                discr: None,
+                fields: fields
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, ty)| field(&format!("v{i}"), ty))
+                    .collect(),
+                docstring: None,
+            }
+        }
+
+        fn enum_(name: &str, variants: Vec<VariantMetadata>) -> Metadata {
+            Metadata::Enum(EnumMetadata {
+                module_path: CRATE.into(),
+                name: name.into(),
+                orig_name: None,
+                shape: EnumShape::Enum,
+                remote: false,
+                variants,
+                discr_type: None,
+                non_exhaustive: false,
+                docstring: None,
+            })
+        }
+
+        fn record_(name: &str, fields: Vec<FieldMetadata>) -> Metadata {
+            Metadata::Record(RecordMetadata {
+                module_path: CRATE.into(),
+                name: name.into(),
+                orig_name: None,
+                remote: false,
+                fields,
+                docstring: None,
+            })
+        }
+
+        fn enum_ty(name: &str) -> Type {
+            Type::Enum {
+                module_path: CRATE.into(),
+                name: name.into(),
+            }
+        }
+
+        fn record_ty(name: &str) -> Type {
+            Type::Record {
+                module_path: CRATE.into(),
+                name: name.into(),
+            }
+        }
+
+        fn boxed(inner: Type) -> Type {
+            Type::Box {
+                inner_type: Box::new(inner),
+            }
+        }
+
+        fn recursive_enums() -> anyhow::Result<Vec<String>> {
+            let object = Type::Object {
+                module_path: CRATE.into(),
+                name: "Obj".into(),
+                imp: ObjectImpl::Struct,
+            };
+            let items = vec![
+                Metadata::Namespace(NamespaceMetadata {
+                    crate_name: CRATE.into(),
+                    name: CRATE.into(),
+                }),
+                // Recursive through a `HashMap`.
+                enum_(
+                    "ViaMap",
+                    vec![
+                        variant(
+                            "N",
+                            vec![Type::Map {
+                                key_type: Box::new(Type::String),
+                                value_type: Box::new(enum_ty("ViaMap")),
+                            }],
+                        ),
+                        variant("L", vec![]),
+                    ],
+                ),
+                // Recursive through a custom type over `Vec<ViaCustom>`.
+                Metadata::CustomType(CustomTypeMetadata {
+                    module_path: CRATE.into(),
+                    name: "Wrapped".into(),
+                    orig_name: None,
+                    builtin: Type::Sequence {
+                        inner_type: Box::new(enum_ty("ViaCustom")),
+                    },
+                    docstring: None,
+                }),
+                enum_(
+                    "ViaCustom",
+                    vec![
+                        variant(
+                            "N",
+                            vec![Type::Custom {
+                                module_path: CRATE.into(),
+                                name: "Wrapped".into(),
+                                builtin: Box::new(Type::Sequence {
+                                    inner_type: Box::new(enum_ty("ViaCustom")),
+                                }),
+                            }],
+                        ),
+                        variant("L", vec![]),
+                    ],
+                ),
+                // An object is not an edge, even when its methods could
+                // return the enum.
+                Metadata::Object(ObjectMetadata {
+                    module_path: CRATE.into(),
+                    name: "Obj".into(),
+                    orig_name: None,
+                    remote: false,
+                    imp: ObjectImpl::Struct,
+                    docstring: None,
+                }),
+                enum_("HoldsObject", vec![variant("N", vec![object])]),
+                // `T -> U -> T` and `T -> V -> U`. The uniffi-rs flag can
+                // miss `V`.
+                enum_(
+                    "T",
+                    vec![
+                        variant("A", vec![record_ty("U")]),
+                        variant("B", vec![enum_ty("V")]),
+                        variant("Z", vec![]),
+                    ],
+                ),
+                record_(
+                    "U",
+                    vec![field(
+                        "t",
+                        Type::Optional {
+                            inner_type: Box::new(boxed(enum_ty("T"))),
+                        },
+                    )],
+                ),
+                enum_("V", vec![variant("X", vec![record_ty("U")])]),
+                // Uses a recursive enum, but is not in a cycle.
+                enum_("Outside", vec![variant("A", vec![enum_ty("T")])]),
+            ];
+            let mut converter = UniffiMetaConverter::default();
+            for item in items {
+                converter.add_metadata_item(item)?;
+            }
+            let root =
+                general::pipeline("react-native").execute(converter.try_into_initial_ir()?)?;
+            let mut names: Vec<String> = recursive_enum_names(&root.namespaces[CRATE])
+                .into_iter()
+                .collect();
+            names.sort();
+            Ok(names)
+        }
+
+        #[test]
+        fn finds_the_recursive_enums_of_a_namespace() -> anyhow::Result<()> {
+            // uniffi-rs starts its search in `HashMap` order, so run the
+            // pipeline many times: the result must not change.
+            for _ in 0..20 {
+                assert_eq!(recursive_enums()?, ["T", "V", "ViaCustom", "ViaMap"]);
+            }
+            Ok(())
+        }
     }
 }
