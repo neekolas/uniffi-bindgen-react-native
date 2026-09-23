@@ -388,6 +388,7 @@ pub(super) fn build_enum(
         docstring,
         is_flat,
         is_error,
+        is_recursive: en.recursive,
         discr_type,
         variants,
         uniffi_traits,

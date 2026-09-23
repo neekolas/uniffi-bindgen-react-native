@@ -10,6 +10,21 @@ export enum {{ type_name__Tags }} {
     {%- if !loop.last %},{% endif -%}
     {% endfor %}
 }
+{%- if e.is_recursive %}
+
+// `{{ type_name }}` refers to itself, maybe through other types. So its type is
+// a union of these variant shapes, and not of the variant classes. For some
+// recursive enums, TypeScript cannot compile a type that comes from the
+// classes: the type refers to itself while TypeScript infers it.
+{%- for variant in e.variants %}
+{% call cb::tagged_enum_variant_interface(e, variant, type_name) %}
+{%- endfor %}
+
+{% if let Some(ds) = e.docstring -%}
+{{ ds }}
+{% endif -%}
+export type {{ type_name }} = {% for variant in e.variants %}{{ type_name }}_{{ variant.name }}_interface{% if !loop.last %} | {% endif %}{% endfor %};
+{% endif %}
 
 {%- if let Some(ds) = e.docstring %}
 {{ ds }}
@@ -19,9 +34,11 @@ export const {{ type_name }} = (() => {
     {%- let external_name = variant.name %}
     {%- let variant_class = format!("{external_name}_") %}
     {%- let variant_interface = format!("{variant_class}_interface") %}
+    {%- let recursive_variant_interface = format!("{type_name}_{external_name}_interface") %}
     {%- let variant_tag = format!("{type_name__Tags}.{external_name}") %}
     {%- let has_fields = !variant.fields.is_empty() %}
     {%- let is_tuple = variant.has_nameless_fields %}
+    {%- if !e.is_recursive %}
 
     type {{ variant_interface }} = {
         tag: {{ variant_tag }}
@@ -29,11 +46,12 @@ export const {{ type_name }} = (() => {
         inner: {% call cb::variant_inner_type(variant) %}
         {%- endif %}
     };
+    {%- endif %}
 
     {%- if let Some(ds) = variant.docstring %}
 {{ ds }}
     {%- endif %}
-    class {{ variant_class }} extends {% if e.is_error %}UniffiError{% else %}UniffiEnum{% endif %} implements {{ variant_interface }} {
+    class {{ variant_class }} extends {% if e.is_error %}UniffiError{% else %}UniffiEnum{% endif %} implements {% if e.is_recursive %}{{ recursive_variant_interface }}{% else %}{{ variant_interface }}{% endif %} {
         /**
          * @private
          * This field is private and should not be used, use `tag` instead.
@@ -156,6 +174,7 @@ export const {{ type_name }} = (() => {
     });
 
 })();
+{%- if !e.is_recursive %}
 
 {%- if let Some(ds) = e.docstring %}
 {{ ds }}
@@ -163,6 +182,7 @@ export const {{ type_name }} = (() => {
 export type {{ type_name }} = InstanceType<
     typeof {{ type_name }}[{%- for variant in e.variants %}'{{ variant.name }}'{% if !loop.last %} | {% endif %}{%- endfor %}]
 >;
+{%- endif %}
 
 // FfiConverter for enum {{ type_name }}
 const {{ e.ffi_converter_name }} = (() => {
