@@ -10,10 +10,12 @@ import {
   FfiConverterArrayBuffer,
   AbstractFfiConverterByteArray,
   FfiConverterBool,
+  FfiConverterBox,
   FfiConverterInt16,
   FfiConverterInt32,
   FfiConverterInt8,
   FfiConverterOptional,
+  FfiConverterSet,
   FfiConverterUInt16,
   FfiConverterUInt8,
   FfiConverterUint8Array,
@@ -144,6 +146,34 @@ test("AbstractFfiConverterByteArray.lower uses the supplied allocator", (t) => {
   t.assertEqual(view.byteLength, 8);
   const lifted = FfiConverterUint8Array.lift(view);
   t.assertEqual(Array.from(lifted), [1, 2, 3, 4]);
+});
+
+test("Set of shorts", (t) => {
+  const converter = new FfiConverterSet(FfiConverterUInt16);
+  testConverter(t, converter, new Set([1, 2, 3]));
+  testConverter(t, converter, new Set<number>());
+});
+
+test("Set has the uniffi_core wire format: an i32 count, then the items", (t) => {
+  const converter = new FfiConverterSet(FfiConverterUInt8);
+  const lowered = converter.lower(new Set([7, 9]), testAlloc);
+  t.assertEqual(Array.from(lowered), [0, 0, 0, 2, 7, 9]);
+});
+
+test("Box of a short has the FFI value of a short", (t) => {
+  const converter = new FfiConverterBox(FfiConverterUInt16);
+  const lowered = converter.lower(0x7fff, testAlloc);
+  t.assertEqual(lowered, 0x7fff);
+  t.assertEqual(converter.lift(lowered), 0x7fff);
+  t.assertEqual(converter.allocationSize(0x7fff), 2);
+});
+
+test("Box of an optional short in a buffer", (t) => {
+  const converter = new TestConverter(
+    new FfiConverterBox(new FfiConverterOptional(FfiConverterUInt16)),
+  );
+  testConverter(t, converter, 0x7fff);
+  testConverter(t, converter, undefined);
 });
 
 test("Array of optional shorts", (t) => {
