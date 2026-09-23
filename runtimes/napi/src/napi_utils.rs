@@ -359,12 +359,19 @@ pub unsafe fn read_typedarray_data(
 /// 1. [`BorrowedBytes::check`] runs before any other argument is converted, so
 ///    a failed check cannot leak an owned `RustBuffer`.
 /// 2. [`BorrowedBytes::foreign_bytes`] reads the pointer after all the
-///    arguments are converted. No JS runs between it and the Rust call, so JS
-///    cannot detach or resize the buffer while Rust holds the pointer.
+///    arguments are converted, and no JS runs between it and the Rust call.
+///    It cannot fail, so it cannot leak an owned `RustBuffer`.
 ///
-/// Conversions between the two steps can run JS. If that JS detaches or
-/// shrinks the buffer, the view no longer holds the checked bytes, and Rust
-/// gets an empty slice. JS also reports `byteLength` 0 for such a view.
+/// A view that is detached before the call has `byteLength` 0, so Rust gets an
+/// empty slice. Conversions between the two steps can run JS, for example a
+/// getter. If that JS detaches or shrinks the buffer, the view no longer holds
+/// the checked bytes, and Rust also gets an empty slice.
+///
+/// JS must not change, transfer, detach or resize the buffer while Rust runs,
+/// for example from a callback that Rust calls. Rust reads the memory
+/// directly, and a transfer or a resize can free it.
+///
+/// See `docs/src/idioms/common-types.md` for the behaviour on each flavor.
 pub enum BorrowedBytes {
     /// A view over an `ArrayBuffer`. `len` is its length when it was checked.
     View {

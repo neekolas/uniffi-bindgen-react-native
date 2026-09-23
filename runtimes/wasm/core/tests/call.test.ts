@@ -519,3 +519,21 @@ test("ForeignBytes: a view longer than i32::MAX is an error, before any alloc", 
   );
   assert.deepStrictEqual(allocs, []);
 });
+
+test("ForeignBytes: a detached view gives an empty slice", () => {
+  const { memory, ctx, allocs } = growingContext();
+  const detached = new Uint8Array([1, 2, 3]);
+  structuredClone(detached.buffer, { transfer: [detached.buffer] });
+  let seen: unknown;
+  const dispatch = specializeFunction(
+    ctx,
+    (fbPtr: number) => {
+      seen = readForeignBytes(memory, fbPtr);
+      return 0;
+    },
+    BORROWED_DEF,
+  );
+  dispatch(detached);
+  assert.deepStrictEqual(seen, { len: 0, dataPtr: 0 });
+  assert.deepStrictEqual(allocs, []);
+});
