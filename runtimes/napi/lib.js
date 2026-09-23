@@ -40,9 +40,11 @@ module.exports = {
 };
 
 // Node ESM finds the named exports of this file with cjs-module-lexer. The
-// lexer does not see names in the spread above, so assign each value that
-// `lib.d.ts` declares again, in a form that the lexer finds. Then
-// `import { FfiType } from "@ubjs/node"` works.
+// lexer does not see names in the `...native` spread above, so without the
+// first line, `import { UniffiNativeModule } from "@ubjs/node"` fails. The
+// lexer finds the other three names in the object above. Their lines are a
+// safety measure, so that each value that `lib.d.ts` declares has an
+// explicit assignment.
 module.exports.UniffiNativeModule = native.UniffiNativeModule;
 module.exports.resolveLibPath = resolveLibPath;
 module.exports.ResolveLibPathError = ResolveLibPathError;
