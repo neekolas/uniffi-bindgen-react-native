@@ -494,14 +494,21 @@ impl TsApiModule {
                 }
                 general::TypeDefinition::Custom(custom) => {
                     let td = TsTypeDefinition::Custom(build_custom_type(config, custom));
-                    if matches!(
+                    // A custom type reads its builtin converter when the module
+                    // loads, so it is deferred when that converter is deferred.
+                    // uniffi-rs puts the builtin type first, so a custom type
+                    // over a deferred custom type finds it here.
+                    let builtin_is_deferred = matches!(
                         custom.builtin.ty,
                         general::Type::Map { .. }
                             | general::Type::Sequence { .. }
                             | general::Type::Set { .. }
                             | general::Type::Box { .. }
                             | general::Type::Optional { .. }
-                    ) {
+                    ) || deferred_wrappers
+                        .iter()
+                        .any(|w| w.name == custom.builtin.canonical_name);
+                    if builtin_is_deferred {
                         deferred_wrappers.push(DeferredWrapper::new(
                             &custom.self_type,
                             [&custom.builtin],

@@ -26,6 +26,7 @@ import {
   identityPointSet,
   identitySetMap,
   identityStringSet,
+  identityTagList,
   identityTags,
   identityTree,
   identityU32Set,
@@ -123,10 +124,11 @@ test("HashMap<String, HashSet<u32>> round trips", (t) => {
   assertSetEqual(t, result.get("some")!, new Set([1, 2, 3]));
 });
 
-test("A custom type over a set round trips", (t) => {
+test("A custom type over a set, and over that custom type, round trips", (t) => {
   const value = new Set(["red", "green"]);
   assertSetEqual(t, identityTags(value), value);
   t.assertEqual(tagsLen(value), 2);
+  assertSetEqual(t, identityTagList(value), value);
 });
 
 test("A record with set fields round trips", (t) => {

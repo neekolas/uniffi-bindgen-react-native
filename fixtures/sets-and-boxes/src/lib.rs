@@ -91,6 +91,15 @@ fn tags_len(value: Tags) -> u32 {
     value.0.len() as u32
 }
 
+/// A custom type over a custom type over a set.
+pub struct TagList(pub Tags);
+uniffi::custom_newtype!(TagList, Tags);
+
+#[uniffi::export]
+fn identity_tag_list(value: TagList) -> TagList {
+    value
+}
+
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
 pub struct Labelled {
     pub name: String,
