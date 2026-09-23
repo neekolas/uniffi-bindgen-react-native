@@ -33,6 +33,7 @@
     "test": "cargo test"
   },
   "devDependencies": {
+    "@types/node": "^24",
     "abortcontroller-polyfill": "^1.7.5",
     "metro": "^0.80.8",
     "metro-core": "^0.80.8",

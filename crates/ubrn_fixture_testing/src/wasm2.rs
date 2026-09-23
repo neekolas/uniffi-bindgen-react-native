@@ -50,22 +50,25 @@ pub fn run_test(crate_name: &str, test_script: &str, target_tmpdir: &str) {
         .unwrap_or_else(|e| panic!("staging {wasm_file}: {e:#}"));
 
     // Step 4: Stand in for the entrypoint a real project would use. Test
-    // scripts are shared across flavors, so they import the API module
-    // directly and never call `uniffiInitAsync`.
+    // scripts are shared across flavors, so they do not pass a wasm source to
+    // `uniffiInitAsync`. The preload opens the module before the test script
+    // runs.
     let bootstrap = write_node_bootstrap(&ts_dir, &lib_stem);
 
-    // Step 5: Write fixture tsconfig + run tsx.
+    // Step 5: Write fixture tsconfig, type-check with tsc (this also checks
+    // the preload), then run tsx.
     let _tsconfig_guard = crate::CleanupFile::new(crate::write_fixture_tsconfig(
         &fixture_dir,
         crate::Flavor::Wasm2,
     ));
+    crate::run_tsc(&fixture_dir, crate::Flavor::Wasm2, test_script);
     crate::run_tsx_with_preload(test_script, &bootstrap);
 }
 
 /// Write the preload that initialises the generated bindings, and return its
 /// path. The index does the real loading; this only names the asset and calls
-/// it, because test scripts are shared across flavors and never call it
-/// themselves.
+/// it. Test scripts are shared across flavors, so they do not pass a wasm
+/// source to `uniffiInitAsync`; this preload opens the module for them.
 fn write_node_bootstrap(ts_dir: &Utf8Path, lib_stem: &str) -> Utf8PathBuf {
     let path = ts_dir.join("uniffi-bootstrap.node.ts");
     std::fs::write(

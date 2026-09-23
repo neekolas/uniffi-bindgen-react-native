@@ -20,8 +20,12 @@ import bindings, {
 import "@/polyfills";
 
 // Idempotence: calling uniffiInitAsync twice must not throw.
-await uniffiInitAsync();
-await uniffiInitAsync();
+// On napi, uniffiInitAsync has no parameter. On wasm2, it has the wasm
+// source as a parameter, but the test preload already opened the module,
+// so a call with no source only gets the first result again.
+const initAgain = uniffiInitAsync as () => Promise<void>;
+await initAgain();
+await initAgain();
 
 test("namespaced default exposes all 5 namespaces", (t) => {
   t.assertNotNull(bindings.custom_types);
