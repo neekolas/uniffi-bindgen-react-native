@@ -11,20 +11,27 @@
 
 import {
   Counter,
+  Entry,
+  type Folder,
   type LinkedNode,
+  Shape,
+  type ShapeRef,
   type Point,
   type TreeNode,
   addOneBoxed,
   asyncAddOneBoxed,
   asyncIdentityStringSet,
+  folderFileCount,
   identityHolder,
   identityI64Set,
   identityLabelled,
+  identityFolder,
   identityLinked,
   identityMaybeBoxedPoint,
   identityNested,
   identityPointSet,
   identitySetMap,
+  identityShapeRef,
   identityStringSet,
   identityTagList,
   identityTags,
@@ -34,6 +41,7 @@ import {
   linkedSum,
   nextBoxedCounter,
   pointSetLen,
+  shapeDotCount,
   shoutBoxed,
   stringSetContains,
   stringSetFrom,
@@ -203,6 +211,70 @@ test("Recursive record through Vec<Self> round trips", (t) => {
   };
   t.assertEqual(treeSum(tree), 10);
   t.assertEqual(identityTree(tree), tree);
+});
+
+// The generated module loads only if each custom type in a cycle comes after
+// the converter of its builtin type.
+test("A custom type over a record in a cycle round trips", (t) => {
+  const inner: Folder = {
+    name: "inner",
+    entries: [Entry.File.new({ name: "b" })],
+  };
+  const folder: Folder = {
+    name: "root",
+    entries: [
+      Entry.File.new({ name: "a" }),
+      Entry.Folder.new({ folder: inner }),
+      Entry.Link.new({ target: inner }),
+    ],
+  };
+  t.assertEqual(folderFileCount(folder), 3);
+
+  const result = identityFolder(folder);
+  t.assertEqual(folderFileCount(result), 3);
+  t.assertEqual(result.name, "root");
+  t.assertEqual(result.entries.length, 3);
+  const [file, sub, link] = result.entries;
+  t.assertTrue(Entry.File.instanceOf(file));
+  t.assertTrue(Entry.Folder.instanceOf(sub));
+  if (Entry.Link.instanceOf(link)) {
+    t.assertEqual(link.inner.target.name, "inner");
+    t.assertEqual(link.inner.target.entries.length, 1);
+  } else {
+    t.fail("not a Link");
+  }
+});
+
+test("A custom type over an enum in a cycle round trips", (t) => {
+  const shape: ShapeRef = Shape.Group.new({
+    children: new Map<string, ShapeRef>([
+      ["dot", Shape.Dot.new()],
+      ["framed", Shape.Framed.new({ content: Shape.Dot.new() })],
+      ["empty", Shape.Framed.new({})],
+    ]),
+  });
+  t.assertEqual(shapeDotCount(shape), 2);
+
+  const result = identityShapeRef(shape);
+  t.assertEqual(shapeDotCount(result), 2);
+  if (Shape.Group.instanceOf(result)) {
+    const children = result.inner.children;
+    t.assertEqual(children.size, 3);
+    t.assertTrue(Shape.Dot.instanceOf(children.get("dot")!));
+    const framed = children.get("framed")!;
+    if (Shape.Framed.instanceOf(framed)) {
+      t.assertTrue(Shape.Dot.instanceOf(framed.inner.content!));
+    } else {
+      t.fail("not Framed");
+    }
+    const empty = children.get("empty")!;
+    t.assertTrue(Shape.Framed.instanceOf(empty));
+    if (Shape.Framed.instanceOf(empty)) {
+      t.assertEqual(empty.inner.content, undefined);
+    }
+  } else {
+    t.fail("not a Group");
+  }
 });
 
 (async () => {
