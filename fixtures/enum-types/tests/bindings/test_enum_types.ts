@@ -41,9 +41,13 @@ import {
   IntList,
   IntList_Tags,
   Detour,
+  Nested,
+  Nested_Tags,
   Route,
   Route_Tags,
+  identityNested,
   identityRoute,
+  nestedSum,
   routeLength,
   failWithChain,
   identityExpr,
@@ -377,6 +381,53 @@ function testRecursiveNarrowing(list: IntList): number {
 test("Recursive enum: narrowing", (t) => {
   t.assertEqual(testRecursiveNarrowing(makeIntList([7])), 7);
   t.assertEqual(testRecursiveNarrowing(makeIntList([])), 0);
+});
+
+// A type check only: in the false branch of `instanceof`, TypeScript narrows
+// a recursive enum to the other variant classes.
+function testInstanceofFalseBranch(list: IntList): number {
+  if (list instanceof IntList.Cons) {
+    return list.inner[0];
+  }
+  const nil: InstanceType<typeof IntList.Nil> = list;
+  return nil.tag === IntList_Tags.Nil ? 0 : -1;
+}
+
+test("Recursive enum: instanceof", (t) => {
+  t.assertEqual(testInstanceofFalseBranch(makeIntList([4])), 4);
+  t.assertEqual(testInstanceofFalseBranch(makeIntList([])), 0);
+});
+
+function nestedLeaves(value: Nested): number[] {
+  switch (value.tag) {
+    case Nested_Tags.List:
+      return value.inner[0].flatMap(nestedLeaves);
+    case Nested_Tags.Dict:
+      return [...value.inner[0].values()].flatMap(nestedLeaves);
+    case Nested_Tags.Leaf:
+      return [value.inner[0]];
+  }
+}
+
+test("Recursive enum through a Vec and a HashMap in tuple variants", (t) => {
+  const value = Nested.List.new([
+    Nested.Leaf.new(1),
+    Nested.Dict.new(
+      new Map<string, Nested>([
+        ["a", Nested.Leaf.new(2)],
+        ["b", Nested.List.new([Nested.Leaf.new(3)])],
+      ]),
+    ),
+    Nested.List.new([]),
+  ]);
+  t.assertEqual(nestedSum(value), 6);
+  const result = identityNested(value);
+  t.assertEqual(result.tag, Nested_Tags.List);
+  t.assertEqual(nestedLeaves(result).sort(), [1, 2, 3]);
+  if (!(result instanceof Nested.List)) {
+    const other: InstanceType<typeof Nested.Dict | typeof Nested.Leaf> = result;
+    t.fail(`not a list: ${other.tag}`);
+  }
 });
 
 test("Every enum in a cycle round trips", (t) => {

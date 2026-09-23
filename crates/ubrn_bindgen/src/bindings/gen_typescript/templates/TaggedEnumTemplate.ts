@@ -10,31 +10,154 @@ export enum {{ type_name__Tags }} {
     {%- if !loop.last %},{% endif -%}
     {% endfor %}
 }
+
 {%- if e.is_recursive %}
 
-// `{{ type_name }}` refers to itself, maybe through other types. So its type is
-// a union of these variant shapes, and not of the variant classes. For some
-// recursive enums, TypeScript cannot compile a type that comes from the
-// classes: the type refers to itself while TypeScript infers it.
+// `{{ type_name }}` refers to itself, maybe through other types. So its variant
+// classes are at module scope, and its type is a union of the classes. Other
+// enums declare the classes in `(() => { ... })()`, and their type comes from
+// that value. For some recursive enums, TypeScript cannot infer that type,
+// because the type refers to itself.
 {%- for variant in e.variants %}
-{% call cb::tagged_enum_variant_interface(e, variant, type_name) %}
-{%- endfor %}
+{% call tagged_enum_variant_class(e, variant, type_name, type_name__Tags, format!("{}_{}_", type_name, variant.name)) %}{%- endfor %}
 
 {% if let Some(ds) = e.docstring -%}
 {{ ds }}
 {% endif -%}
-export type {{ type_name }} = {% for variant in e.variants %}{{ type_name }}_{{ variant.name }}_interface{% if !loop.last %} | {% endif %}{% endfor %};
+export type {{ type_name }} = {% for variant in e.variants %}{{ type_name }}_{{ variant.name }}_{% if !loop.last %} | {% endif %}{% endfor %};
 {% endif %}
-
 {%- if let Some(ds) = e.docstring %}
 {{ ds }}
 {%- endif %}
 export const {{ type_name }} = (() => {
+  {%- if !e.is_recursive %}
+  {%- for variant in e.variants %}{% call tagged_enum_variant_class(e, variant, type_name, type_name__Tags, format!("{}_", variant.name)) %}{%- endfor %}
+  {%- endif %}
+
+    function instanceOf(obj: any): obj is {{ type_name }} {
+        return obj[uniffiTypeNameSymbol] === "{{ type_name }}";
+    }
+
+    return Object.freeze({
+        instanceOf,
+        {%- for cons in e.constructors %}
+{% call cb::docstring(cons.docstring) %}
+        {% if cons.renders_async() %}async {% endif %}{{ cons.name }}({% call cb::arg_list_decl(cons) %}): {% call cb::return_type(cons) %} {
+{%- call cb::call_body_function(cons) %}
+        },
+        {%- endfor %}
+        {%- for method in e.methods %}
+{% call cb::docstring(method.docstring) %}
+        {% if method.renders_async() %}async {% endif %}{{ method.name }}(self_: {{ type_name }}{% if !method.arguments.is_empty() %}, {% endif %}{% call cb::arg_list_decl(method) %}): {% call cb::return_type(method) %} {
+{%- call cb::call_body_value(method) %}
+        },
+        {%- endfor %}
   {%- for variant in e.variants %}
+  {%-   let external_name = variant.name %}
+  {%-   if e.is_recursive %}
+  {{    external_name }}: {{ type_name }}_{{ external_name }}_
+  {%-   else %}
+  {%-     let variant_class = format!("{external_name}_") %}
+  {{    external_name }}: {{ variant_class }}
+  {%-   endif %}
+  {%-   if !loop.last %}, {% endif -%}
+  {%- endfor %}
+    });
+
+})();
+{%- if !e.is_recursive %}
+
+{%- if let Some(ds) = e.docstring %}
+{{ ds }}
+{%- endif %}
+export type {{ type_name }} = InstanceType<
+    typeof {{ type_name }}[{%- for variant in e.variants %}'{{ variant.name }}'{% if !loop.last %} | {% endif %}{%- endfor %}]
+>;
+{%- endif %}
+
+// FfiConverter for enum {{ type_name }}
+const {{ e.ffi_converter_name }} = (() => {
+    type TypeName = {{ type_name }};
+    class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+        readFromCursor(c: Cursor): TypeName {
+            switch (c.readI32()) {
+            {%- for variant in e.variants %}
+            {%-   let has_fields = !variant.fields.is_empty() %}
+            {%-   let is_tuple = variant.has_nameless_fields %}
+            {%-   let external_name = variant.name %}
+                case {{ loop.index }}: return new {{ type_name }}.{{ external_name }}(
+            {%-   if has_fields %}
+            {%-     if !is_tuple %}{
+            {%-     for field in variant.fields %}
+            {{-       field.name }}: {{ field.ffi_converter }}.readFromCursor(c)
+            {%-       if !loop.last -%}, {% endif %}
+            {%-     endfor %} }
+            {%-     else %}
+            {%-       for field in variant.fields %}
+            {{-         field.ffi_converter }}.readFromCursor(c)
+            {%-         if !loop.last -%}, {% endif %}
+            {%-       endfor %}
+            {%-     endif %}
+            {%-   endif %});
+            {%- endfor %}
+                default: throw new UniffiInternalError.UnexpectedEnumCase();
+            }
+        }
+        writeIntoCursor(value: TypeName, c: Cursor): void {
+            switch (value.tag) {
+                {%- for variant in e.variants %}
+                {%-   let has_fields = !variant.fields.is_empty() %}
+                {%-   let is_tuple = variant.has_nameless_fields %}
+                {%-   let external_name = variant.name %}
+                case {{ type_name__Tags }}.{{ external_name }}: {
+                    c.writeI32({{ loop.index }});
+                    {%- if has_fields %}
+                    const inner = value.inner;
+                    {%-   for field in variant.fields %}
+                    {{ field.ffi_converter }}.writeIntoCursor({%- if is_tuple %}inner[{{ loop.index0 }}]{% else %}inner.{{ field.name }}{% endif %}, c);
+                    {%-   endfor %}
+                    {%- endif %}
+                    return;
+                }
+                {%- endfor %}
+                default:
+                    // Throwing from here means that {{ type_name__Tags }} hasn't matched an ordinal.
+                    throw new UniffiInternalError.UnexpectedEnumCase();
+            }
+        }
+        allocationSize(value: TypeName): number {
+            switch (value.tag) {
+                {%- for variant in e.variants %}
+                {%-   let has_fields = !variant.fields.is_empty() %}
+                {%-   let is_tuple = variant.has_nameless_fields %}
+                {%-   let external_name = variant.name %}
+                case {{ type_name__Tags }}.{{ external_name }}: {
+                {%-   if has_fields %}
+                    const inner = value.inner;
+                    let size = 4;
+                {%-     for field in variant.fields %}
+                    size += {{ field.ffi_converter }}.allocationSize({%- if is_tuple %}inner[{{ loop.index0 }}]{% else %}inner.{{ field.name }}{% endif %});
+                {%-     endfor %}
+                    return size;
+                {%-   else %}
+                    return 4;
+                {%-   endif %}
+                }
+                {%- endfor %}
+                default: throw new UniffiInternalError.UnexpectedEnumCase();
+            }
+        }
+    }
+    return new FFIConverter();
+})();
+{%- endmacro %}
+
+{#-
+  One variant class of a tagged enum. `variant_class` is the name of the class.
+-#}
+{%- macro tagged_enum_variant_class(e, variant, type_name, type_name__Tags, variant_class) %}
     {%- let external_name = variant.name %}
-    {%- let variant_class = format!("{external_name}_") %}
     {%- let variant_interface = format!("{variant_class}_interface") %}
-    {%- let recursive_variant_interface = format!("{type_name}_{external_name}_interface") %}
     {%- let variant_tag = format!("{type_name__Tags}.{external_name}") %}
     {%- let has_fields = !variant.fields.is_empty() %}
     {%- let is_tuple = variant.has_nameless_fields %}
@@ -51,7 +174,7 @@ export const {{ type_name }} = (() => {
     {%- if let Some(ds) = variant.docstring %}
 {{ ds }}
     {%- endif %}
-    class {{ variant_class }} extends {% if e.is_error %}UniffiError{% else %}UniffiEnum{% endif %} implements {% if e.is_recursive %}{{ recursive_variant_interface }}{% else %}{{ variant_interface }}{% endif %} {
+    class {{ variant_class }} extends {% if e.is_error %}UniffiError{% else %}UniffiEnum{% endif %}{% if !e.is_recursive %} implements {{ variant_interface }}{% endif %} {
         /**
          * @private
          * This field is private and should not be used, use `tag` instead.
@@ -145,118 +268,4 @@ export const {{ type_name }} = (() => {
         {%- endif %}
 
     }
-  {%- endfor %}
-
-    function instanceOf(obj: any): obj is {{ type_name }} {
-        return obj[uniffiTypeNameSymbol] === "{{ type_name }}";
-    }
-
-    return Object.freeze({
-        instanceOf,
-        {%- for cons in e.constructors %}
-{% call cb::docstring(cons.docstring) %}
-        {% if cons.renders_async() %}async {% endif %}{{ cons.name }}({% call cb::arg_list_decl(cons) %}): {% call cb::return_type(cons) %} {
-{%- call cb::call_body_function(cons) %}
-        },
-        {%- endfor %}
-        {%- for method in e.methods %}
-{% call cb::docstring(method.docstring) %}
-        {% if method.renders_async() %}async {% endif %}{{ method.name }}(self_: {{ type_name }}{% if !method.arguments.is_empty() %}, {% endif %}{% call cb::arg_list_decl(method) %}): {% call cb::return_type(method) %} {
-{%- call cb::call_body_value(method) %}
-        },
-        {%- endfor %}
-  {%- for variant in e.variants %}
-  {%-   let external_name = variant.name %}
-  {%-   let variant_class = format!("{external_name}_") %}
-  {{    external_name }}: {{ variant_class }}
-  {%-   if !loop.last %}, {% endif -%}
-  {%- endfor %}
-    });
-
-})();
-{%- if !e.is_recursive %}
-
-{%- if let Some(ds) = e.docstring %}
-{{ ds }}
-{%- endif %}
-export type {{ type_name }} = InstanceType<
-    typeof {{ type_name }}[{%- for variant in e.variants %}'{{ variant.name }}'{% if !loop.last %} | {% endif %}{%- endfor %}]
->;
-{%- endif %}
-
-// FfiConverter for enum {{ type_name }}
-const {{ e.ffi_converter_name }} = (() => {
-    type TypeName = {{ type_name }};
-    class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
-        readFromCursor(c: Cursor): TypeName {
-            switch (c.readI32()) {
-            {%- for variant in e.variants %}
-            {%-   let has_fields = !variant.fields.is_empty() %}
-            {%-   let is_tuple = variant.has_nameless_fields %}
-            {%-   let external_name = variant.name %}
-                case {{ loop.index }}: return new {{ type_name }}.{{ external_name }}(
-            {%-   if has_fields %}
-            {%-     if !is_tuple %}{
-            {%-     for field in variant.fields %}
-            {{-       field.name }}: {{ field.ffi_converter }}.readFromCursor(c)
-            {%-       if !loop.last -%}, {% endif %}
-            {%-     endfor %} }
-            {%-     else %}
-            {%-       for field in variant.fields %}
-            {{-         field.ffi_converter }}.readFromCursor(c)
-            {%-         if !loop.last -%}, {% endif %}
-            {%-       endfor %}
-            {%-     endif %}
-            {%-   endif %});
-            {%- endfor %}
-                default: throw new UniffiInternalError.UnexpectedEnumCase();
-            }
-        }
-        writeIntoCursor(value: TypeName, c: Cursor): void {
-            switch (value.tag) {
-                {%- for variant in e.variants %}
-                {%-   let has_fields = !variant.fields.is_empty() %}
-                {%-   let is_tuple = variant.has_nameless_fields %}
-                {%-   let external_name = variant.name %}
-                case {{ type_name__Tags }}.{{ external_name }}: {
-                    c.writeI32({{ loop.index }});
-                    {%- if has_fields %}
-                    const inner = value.inner;
-                    {%-   for field in variant.fields %}
-                    {{ field.ffi_converter }}.writeIntoCursor({%- if is_tuple %}inner[{{ loop.index0 }}]{% else %}inner.{{ field.name }}{% endif %}, c);
-                    {%-   endfor %}
-                    {%- endif %}
-                    return;
-                }
-                {%- endfor %}
-                default:
-                    // Throwing from here means that {{ type_name__Tags }} hasn't matched an ordinal.
-                    throw new UniffiInternalError.UnexpectedEnumCase();
-            }
-        }
-        allocationSize(value: TypeName): number {
-            switch (value.tag) {
-                {%- for variant in e.variants %}
-                {%-   let has_fields = !variant.fields.is_empty() %}
-                {%-   let is_tuple = variant.has_nameless_fields %}
-                {%-   let external_name = variant.name %}
-                case {{ type_name__Tags }}.{{ external_name }}: {
-                {%-   if has_fields %}
-                    const inner = value.inner;
-                    let size = 4;
-                {%-     for field in variant.fields %}
-                    size += {{ field.ffi_converter }}.allocationSize({%- if is_tuple %}inner[{{ loop.index0 }}]{% else %}inner.{{ field.name }}{% endif %});
-                {%-     endfor %}
-                    return size;
-                {%-   else %}
-                    return 4;
-                {%-   endif %}
-                }
-                {%- endfor %}
-                default: throw new UniffiInternalError.UnexpectedEnumCase();
-            }
-        }
-    }
-    return new FFIConverter();
-})();
 {%- endmacro %}

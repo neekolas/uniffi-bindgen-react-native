@@ -54,7 +54,7 @@ An `async fn` cannot take a `&[u8]` argument. uniffi-bindgen-react-native stops 
 | Sequences   | `Vec<T>` | `Array<T>` | Max length is 2**31 - 1|
 | Maps    | `HashMap<K, V>` <br/> `BTreeMap<K, V>` | `Map<K, V>` | Max length is 2**31 - 1 |
 | Sets    | `HashSet<T>` | `Set<T>` | Max length is 2**31 - 1. See [below](#sets) |
-| Boxes   | `Box<T>` | `T` | For recursive [enums](./enums.md#recursive-enums) and [records](./records.md) |
+| Boxes   | `Box<T>` | `T` | For [recursive enums and records](./enums.md#recursive-enums-and-records) |
 
 #### Sets
 

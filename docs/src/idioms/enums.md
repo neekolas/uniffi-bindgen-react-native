@@ -142,9 +142,9 @@ const dog = MyAnimal.Dog.new("Fido");
 const cat = MyAnimal.Cat.new();
 ```
 
-## Recursive enums
+## Recursive enums and records
 
-An enum can refer to itself: directly with a `Box<Self>`, or through a `Vec`, an `Option` or a record. uniffi-rs finds these cycles.
+An enum or a record can refer to itself: with a `Box<Self>`, or through a `Vec`, an `Option`, a `HashMap` or another enum or record. `Box<T>` is new in uniffi-rs 0.32. A record needs `Option<Box<Self>>` or a collection, as in Rust.
 
 ```rust
 #[derive(uniffi::Enum)]
@@ -160,7 +160,23 @@ A `Box<T>` is a `T` in Typescript, so `IntList.Cons` has `inner: [number, IntLis
 const list = IntList.Cons.new(1, IntList.Cons.new(2, IntList.Nil.new()));
 ```
 
-The type `IntList` is a union of one object type for each variant, with the same members as the variant class. For other enums, the type comes from the variant classes. For some recursive enums, such as `IntList`, Typescript cannot compile a type that comes from the classes. This difference does not change how you use the enum.
+A recursive record is a Typescript object type that refers to itself:
+
+```rust
+#[derive(uniffi::Record)]
+struct LinkedNode {
+    value: i32,
+    next: Option<Box<LinkedNode>>,
+}
+```
+
+```typescript
+const list: LinkedNode = { value: 1, next: { value: 2 } };
+```
+
+For a recursive enum, the generated code declares the variant classes at the top level of the module, and not inside the `IntList` object. The type `IntList` is the union of the variant classes, as for other enums. Before, an enum that holds itself in a tuple variant, for example `N(Vec<Self>)`, did not compile with `tsc`.
+
+The one difference that you can see: the variant classes have longer names, for example `IntList_Cons_` and not `Cons_`. You see these names in error messages and in `.d.ts` files, and in `constructor.name` at runtime. Use `IntList.Cons`, `InstanceType<typeof IntList.Cons>` and `IntList.Cons.instanceOf`, which do not change.
 
 ## Enums with explicit discriminants
 

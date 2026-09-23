@@ -98,6 +98,7 @@ impl AnimalObject {
     }
 }
 
+use std::collections::HashMap;
 use std::sync::Arc;
 // Adding an enum with a Associated Type that is a exported Arc<Object> with a exported Record field.
 // This is done to check for compilation errors.
@@ -228,6 +229,29 @@ fn identity_expr(value: Expr) -> Expr {
 #[uniffi::export]
 fn identity_expr_group(value: ExprGroup) -> ExprGroup {
     value
+}
+
+// Recursive through a `Vec` in a tuple variant, and through a `HashMap`.
+// Before, the TypeScript for this enum did not compile.
+#[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
+pub enum Nested {
+    List(Vec<Nested>),
+    Dict(HashMap<String, Nested>),
+    Leaf(i32),
+}
+
+#[uniffi::export]
+fn identity_nested(value: Nested) -> Nested {
+    value
+}
+
+#[uniffi::export]
+fn nested_sum(value: Nested) -> i32 {
+    match value {
+        Nested::List(items) => items.into_iter().map(nested_sum).sum(),
+        Nested::Dict(items) => items.into_values().map(nested_sum).sum(),
+        Nested::Leaf(n) => n,
+    }
 }
 
 // Every enum in a cycle is recursive: `Route -> RouteLink -> Route`, and also
