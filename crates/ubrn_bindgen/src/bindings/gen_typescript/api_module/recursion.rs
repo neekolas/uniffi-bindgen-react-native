@@ -214,77 +214,9 @@ mod tests {
     /// Runs metadata for one crate through the general pipeline, as `cli.rs`
     /// does, and returns the recursive enums that ubrn finds.
     mod pipeline {
+        use super::super::super::test_metadata::*;
         use super::super::*;
-        use uniffi_bindgen::pipeline::initial::UniffiMetaConverter;
-        use uniffi_meta::{
-            CustomTypeMetadata, EnumMetadata, EnumShape, FieldMetadata, Metadata,
-            NamespaceMetadata, ObjectImpl, ObjectMetadata, RecordMetadata, Type, VariantMetadata,
-        };
-
-        const CRATE: &str = "rec_crate";
-
-        fn field(name: &str, ty: Type) -> FieldMetadata {
-            FieldMetadata {
-                name: name.into(),
-                orig_name: None,
-                ty,
-                default: None,
-                docstring: None,
-            }
-        }
-
-        fn variant(name: &str, fields: Vec<Type>) -> VariantMetadata {
-            VariantMetadata {
-                name: name.into(),
-                orig_name: None,
-                discr: None,
-                fields: fields
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, ty)| field(&format!("v{i}"), ty))
-                    .collect(),
-                docstring: None,
-            }
-        }
-
-        fn enum_(name: &str, variants: Vec<VariantMetadata>) -> Metadata {
-            Metadata::Enum(EnumMetadata {
-                module_path: CRATE.into(),
-                name: name.into(),
-                orig_name: None,
-                shape: EnumShape::Enum,
-                remote: false,
-                variants,
-                discr_type: None,
-                non_exhaustive: false,
-                docstring: None,
-            })
-        }
-
-        fn record_(name: &str, fields: Vec<FieldMetadata>) -> Metadata {
-            Metadata::Record(RecordMetadata {
-                module_path: CRATE.into(),
-                name: name.into(),
-                orig_name: None,
-                remote: false,
-                fields,
-                docstring: None,
-            })
-        }
-
-        fn enum_ty(name: &str) -> Type {
-            Type::Enum {
-                module_path: CRATE.into(),
-                name: name.into(),
-            }
-        }
-
-        fn record_ty(name: &str) -> Type {
-            Type::Record {
-                module_path: CRATE.into(),
-                name: name.into(),
-            }
-        }
+        use uniffi_meta::{Metadata, ObjectImpl, ObjectMetadata, Type};
 
         fn boxed(inner: Type) -> Type {
             Type::Box {
@@ -298,11 +230,13 @@ mod tests {
                 name: "Obj".into(),
                 imp: ObjectImpl::Struct,
             };
+            let (wrapped, wrapped_ty) = custom(
+                "Wrapped",
+                Type::Sequence {
+                    inner_type: Box::new(enum_ty("ViaCustom")),
+                },
+            );
             let items = vec![
-                Metadata::Namespace(NamespaceMetadata {
-                    crate_name: CRATE.into(),
-                    name: CRATE.into(),
-                }),
                 // Recursive through a `HashMap`.
                 enum_(
                     "ViaMap",
@@ -318,30 +252,10 @@ mod tests {
                     ],
                 ),
                 // Recursive through a custom type over `Vec<ViaCustom>`.
-                Metadata::CustomType(CustomTypeMetadata {
-                    module_path: CRATE.into(),
-                    name: "Wrapped".into(),
-                    orig_name: None,
-                    builtin: Type::Sequence {
-                        inner_type: Box::new(enum_ty("ViaCustom")),
-                    },
-                    docstring: None,
-                }),
+                wrapped,
                 enum_(
                     "ViaCustom",
-                    vec![
-                        variant(
-                            "N",
-                            vec![Type::Custom {
-                                module_path: CRATE.into(),
-                                name: "Wrapped".into(),
-                                builtin: Box::new(Type::Sequence {
-                                    inner_type: Box::new(enum_ty("ViaCustom")),
-                                }),
-                            }],
-                        ),
-                        variant("L", vec![]),
-                    ],
+                    vec![variant("N", vec![wrapped_ty]), variant("L", vec![])],
                 ),
                 // An object is not an edge, even when its methods could
                 // return the enum.
@@ -364,7 +278,7 @@ mod tests {
                         variant("Z", vec![]),
                     ],
                 ),
-                record_(
+                record(
                     "U",
                     vec![field(
                         "t",
@@ -377,13 +291,7 @@ mod tests {
                 // Uses a recursive enum, but is not in a cycle.
                 enum_("Outside", vec![variant("A", vec![enum_ty("T")])]),
             ];
-            let mut converter = UniffiMetaConverter::default();
-            for item in items {
-                converter.add_metadata_item(item)?;
-            }
-            let root =
-                general::pipeline("react-native").execute(converter.try_into_initial_ir()?)?;
-            let mut names: Vec<String> = recursive_enum_names(&root.namespaces[CRATE])
+            let mut names: Vec<String> = recursive_enum_names(&namespace(items)?)
                 .into_iter()
                 .collect();
             names.sort();

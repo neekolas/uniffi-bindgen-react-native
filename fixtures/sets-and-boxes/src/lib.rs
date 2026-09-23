@@ -245,4 +245,86 @@ fn identity_tree(value: TreeNode) -> TreeNode {
     value
 }
 
+// ---------------------------------------------------------------------------
+// Custom types in a cycle
+// ---------------------------------------------------------------------------
+
+/// A record in the cycle `Folder -> Vec<Entry> -> Entry -> FolderRef ->
+/// Folder`.
+#[derive(uniffi::Record)]
+pub struct Folder {
+    pub name: String,
+    pub entries: Vec<Entry>,
+}
+
+/// A custom type over a record in a cycle. In the type definitions of
+/// uniffi-rs, `FolderRef` comes before `Folder`.
+pub struct FolderRef(pub Folder);
+uniffi::custom_newtype!(FolderRef, Folder);
+
+/// A custom type over a custom type over a record in a cycle.
+pub struct FolderLink(pub FolderRef);
+uniffi::custom_newtype!(FolderLink, FolderRef);
+
+#[derive(uniffi::Enum)]
+pub enum Entry {
+    File { name: String },
+    Folder { folder: FolderRef },
+    Link { target: FolderLink },
+}
+
+fn count_files(folder: &Folder) -> u32 {
+    folder
+        .entries
+        .iter()
+        .map(|entry| match entry {
+            Entry::File { .. } => 1,
+            Entry::Folder { folder } => count_files(&folder.0),
+            Entry::Link { target } => count_files(&target.0 .0),
+        })
+        .sum()
+}
+
+#[uniffi::export]
+fn folder_file_count(value: Folder) -> u32 {
+    count_files(&value)
+}
+
+#[uniffi::export]
+fn identity_folder(value: Folder) -> Folder {
+    value
+}
+
+/// An enum in the cycles `Shape -> HashMap<String, ShapeRef> -> ShapeRef ->
+/// Shape` and `Shape -> Option<Box<ShapeRef>> -> ShapeRef -> Shape`.
+#[derive(uniffi::Enum)]
+pub enum Shape {
+    Dot,
+    Group { children: HashMap<String, ShapeRef> },
+    Framed { content: Option<Box<ShapeRef>> },
+}
+
+/// A custom type over an enum in a cycle. In the type definitions of
+/// uniffi-rs, `ShapeRef` comes before `Shape`.
+pub struct ShapeRef(pub Shape);
+uniffi::custom_newtype!(ShapeRef, Shape);
+
+fn count_dots(shape: &Shape) -> u32 {
+    match shape {
+        Shape::Dot => 1,
+        Shape::Group { children } => children.values().map(|c| count_dots(&c.0)).sum(),
+        Shape::Framed { content } => content.as_ref().map_or(0, |c| count_dots(&c.0)),
+    }
+}
+
+#[uniffi::export]
+fn shape_dot_count(value: ShapeRef) -> u32 {
+    count_dots(&value.0)
+}
+
+#[uniffi::export]
+fn identity_shape_ref(value: ShapeRef) -> ShapeRef {
+    value
+}
+
 uniffi::setup_scaffolding!();
