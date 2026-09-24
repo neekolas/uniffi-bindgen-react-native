@@ -12,7 +12,9 @@
 //! feed them directly into [`uniffi_meta::read_metadata`].
 //!
 //! This lets the bindings generator skip the second native cargo build whose
-//! sole purpose was to populate a dylib symbol table.
+//! sole purpose was to populate a dylib symbol table. Embedders can pass the
+//! extracted metadata to `uniffi_bindgen` through
+//! [`uniffi_bindgen::BindgenLoader::load_metadata_specialized`].
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -29,15 +31,14 @@ pub(crate) fn looks_like_wasm(bytes: &[u8]) -> bool {
 }
 
 /// Read a wasm cdylib from disk and extract every `UNIFFI_META_*` blob.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn extract_from_wasm(path: &Path) -> Result<Vec<Metadata>> {
+pub fn extract_from_wasm(path: &Path) -> Result<Vec<Metadata>> {
     let wasm_bytes =
         std::fs::read(path).with_context(|| format!("failed to read WASM: {}", path.display()))?;
     extract_from_wasm_bytes(&wasm_bytes)
 }
 
 /// Same as [`extract_from_wasm`], but takes pre-loaded bytes.
-pub(crate) fn extract_from_wasm_bytes(wasm_bytes: &[u8]) -> Result<Vec<Metadata>> {
+pub fn extract_from_wasm_bytes(wasm_bytes: &[u8]) -> Result<Vec<Metadata>> {
     let blobs = read_meta_blobs(wasm_bytes)?;
     blobs
         .into_iter()
@@ -317,7 +318,13 @@ mod tests {
         let mut failures = Vec::new();
         for path in &wasms {
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            match extract_from_wasm(path) {
+            let wasm_bytes = std::fs::read(path).expect("read fixture wasm");
+            let from_bytes = extract_from_wasm_bytes(&wasm_bytes);
+            match from_bytes.and_then(|items| {
+                let from_path = extract_from_wasm(path)?;
+                assert_eq!(items.len(), from_path.len());
+                Ok(items)
+            }) {
                 Err(e) => failures.push(format!("{name}: {e:#}")),
                 Ok(items) if items.is_empty() => failures.push(format!("{name}: no metadata")),
                 Ok(items) if !items.iter().any(|m| matches!(m, Metadata::Namespace(_))) => {
