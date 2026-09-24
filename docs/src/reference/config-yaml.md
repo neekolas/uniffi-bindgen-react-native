@@ -51,9 +51,9 @@ bindings:
     ts: ts/bindings
     uniffiToml: ./uniffi.toml
 ```
-The [`uniffi.toml` file](uniffi-toml.md) configures custom types, to further customize the conversion into Typescript data-types.
+The [`uniffi.toml` file](uniffi-toml.md) configures custom types for one component. It replaces that component's own `uniffi.toml`; it does not merge with it. The generator selects the component by explicit `--crate`, then by a library basename that matches a component crate name, then by the sole component in the source. If a library has multiple components and its basename matches none, the generator prints a warning and uses each component's own `uniffi.toml`. Use `--crate` with the component crate name to target one component through the bindgen CLI.
 
-If missing, the defaults will be used:
+If `uniffiToml` is missing, each component uses its own `uniffi.toml`, or the defaults if it has no file. The output directories default to:
 ```
 bindings:
     cpp: cpp/generated

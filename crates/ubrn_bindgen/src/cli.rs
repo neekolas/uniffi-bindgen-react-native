@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::Args;
 use serde::Deserialize;
@@ -106,7 +106,9 @@ pub struct SourceArgs {
     #[clap(long = "crate")]
     pub(crate) crate_name: Option<String>,
 
-    /// The location of the uniffi.toml file
+    /// A uniffi.toml that replaces one component's own file. Select the component
+    /// with --crate, or by library basename, or when the source has only one component.
+    /// If a multi-component library has no match, this file is not applied.
     #[clap(long)]
     pub(crate) config: Option<Utf8PathBuf>,
 
@@ -159,8 +161,12 @@ impl BindingsArgs {
                 config_path.is_file(),
                 "Config file not found: {config_path}"
             );
-            let crate_name = self.config_crate_name(&source_path, &base_loader, &metadata)?;
-            self.create_loader(manifest_path, Some((&crate_name, config_path)))?
+            match self.config_crate_name(&source_path, &base_loader, &metadata)? {
+                Some(crate_name) => {
+                    self.create_loader(manifest_path, Some((&crate_name, config_path)))?
+                }
+                None => base_loader,
+            }
         } else {
             base_loader
         };
@@ -248,26 +254,30 @@ impl BindingsArgs {
         source_path: &Utf8Path,
         loader: &BindgenLoader,
         metadata: &uniffi_meta::MetadataGroupMap,
-    ) -> Result<String> {
+    ) -> Result<Option<String>> {
         if let Some(crate_name) = &self.source.crate_name {
             let crate_name = crate_name.replace('-', "_");
             anyhow::ensure!(
                 metadata.contains_key(&crate_name),
                 "--crate {crate_name} is not a component in {source_path}"
             );
-            return Ok(crate_name);
+            return Ok(Some(crate_name));
         }
 
         let source_name = loader.source_basename(source_path);
         if metadata.contains_key(source_name) {
-            return Ok(source_name.to_owned());
+            return Ok(Some(source_name.to_owned()));
         }
         if metadata.len() == 1 {
-            return Ok(metadata.keys().next().expect("one component").clone());
+            return Ok(Some(metadata.keys().next().expect("one component").clone()));
         }
-        bail!(
-            "cannot select a component for --config in {source_path}; pass --crate with a component name"
-        )
+        let mut components: Vec<_> = metadata.keys().map(String::as_str).collect();
+        components.sort_unstable();
+        eprintln!(
+            "warning: cannot select a component for --config in {source_path}; components: {}. Pass --crate <component> to target one. Using each component's own uniffi.toml.",
+            components.join(", ")
+        );
+        Ok(None)
     }
 }
 

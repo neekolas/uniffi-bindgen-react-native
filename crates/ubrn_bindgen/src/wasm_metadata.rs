@@ -25,8 +25,10 @@ use wasmparser::{
     Export, ExternalKind, GlobalType, Imports, Operator, Parser, Payload, TypeRef, ValType,
 };
 
-/// Returns true if `bytes` looks like a WebAssembly module (magic + version).
-pub(crate) fn looks_like_wasm(bytes: &[u8]) -> bool {
+/// Return true if `bytes` starts with WebAssembly magic and has at least eight bytes.
+/// Embedders can use this before `load_metadata_specialized` to return `Ok(None)`
+/// for native libraries.
+pub fn looks_like_wasm(bytes: &[u8]) -> bool {
     bytes.len() >= 8 && &bytes[..4] == b"\0asm"
 }
 
