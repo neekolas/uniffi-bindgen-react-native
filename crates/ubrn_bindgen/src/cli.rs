@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::Args;
 use serde::Deserialize;
@@ -149,13 +149,24 @@ impl BindingsArgs {
         let switches = self.switches();
         let source_path = path_or_shim(&self.source.source)?;
 
-        // Load the pipeline IR first, and check it before any file is written,
-        // so that an unsupported feature leaves no partial output.
-        // The pipeline needs per-crate configs (not the --config override) so that
-        // each namespace gets its own crate's uniffi.toml (e.g. custom type mappings).
-        let pipeline_loader = self.create_pipeline_loader(manifest_path)?;
-        let metadata = load_metadata(&pipeline_loader, &source_path)?;
-        let initial_root = pipeline_loader.load_pipeline_initial_root(&source_path, metadata)?;
+        // Load metadata with each crate's own config path. Once the source
+        // crate is known, apply --config only to that crate. Other namespaces
+        // keep their own uniffi.toml, including custom type mappings.
+        let base_loader = self.create_loader(manifest_path, None)?;
+        let metadata = load_metadata(&base_loader, &source_path)?;
+        let loader = if let Some(config_path) = &self.source.config {
+            anyhow::ensure!(
+                config_path.is_file(),
+                "Config file not found: {config_path}"
+            );
+            let crate_name = self.config_crate_name(&source_path, &base_loader, &metadata)?;
+            self.create_loader(manifest_path, Some((&crate_name, config_path)))?
+        } else {
+            base_loader
+        };
+
+        // Check the pipeline IR before writing any output.
+        let initial_root = loader.load_pipeline_initial_root(&source_path, metadata)?;
         // The general pipeline gives every enum a discriminant type, so read
         // which enums declare one explicitly before it runs.
         let explicit_discr_enums = collect_explicit_discr_enums(&initial_root);
@@ -163,8 +174,6 @@ impl BindingsArgs {
         for namespace in general_root.namespaces.values() {
             gen_typescript::api_module::reject_unsupported(namespace)?;
         }
-        let loader = self.create_loader(manifest_path)?;
-
         mk_dir(&out.ts_dir)?;
         mk_dir(&out.cpp_dir)?;
         let ts_dir = out.ts_dir.canonicalize_utf8_or_shim()?;
@@ -214,52 +223,63 @@ impl BindingsArgs {
         Ok(modules)
     }
 
-    fn create_loader(&self, manifest_path: Option<&Utf8PathBuf>) -> Result<BindgenLoader> {
+    fn create_loader(
+        &self,
+        manifest_path: Option<&Utf8PathBuf>,
+        config_override: Option<(&str, &Utf8PathBuf)>,
+    ) -> Result<BindgenLoader> {
         let mut bindgen_paths = BindgenPaths::default();
-        if let Some(config_path) = &self.source.config {
-            anyhow::ensure!(
-                config_path.is_file(),
-                "Config file not found: {config_path}"
-            );
-            bindgen_paths.add_layer(ConfigOverrideLayer(config_path.clone()));
+        if let Some((crate_name, config_path)) = config_override {
+            bindgen_paths.add_layer(ConfigOverrideLayer {
+                crate_name: crate_name.to_owned(),
+                config_path: config_path.clone(),
+            });
         }
         let cwd = Utf8PathBuf::from("Cargo.toml");
         let manifest_path = manifest_path.unwrap_or(&cwd);
         let cargo_metadata = CrateMetadata::cargo_metadata(manifest_path)?;
         let config_supplier = CrateConfigSupplier::from(cargo_metadata);
         bindgen_paths.add_layer(config_supplier);
-        // The uniffi-rs 0.32 global config format is not read yet: `--config`
-        // takes a flat uniffi.toml, as before.
         Ok(BindgenLoader::new(bindgen_paths, GlobalConfig::default()))
     }
 
-    /// Create a loader for the pipeline that uses only per-crate configs.
-    ///
-    /// The `--config` override applies a single TOML to ALL crates, which breaks
-    /// multi-crate scenarios where each dependency has its own `uniffi.toml`
-    /// (e.g. custom type mappings). The pipeline needs each namespace to get its
-    /// own crate's config.
-    fn create_pipeline_loader(&self, manifest_path: Option<&Utf8PathBuf>) -> Result<BindgenLoader> {
-        let mut bindgen_paths = BindgenPaths::default();
-        let cwd = Utf8PathBuf::from("Cargo.toml");
-        let manifest_path = manifest_path.unwrap_or(&cwd);
-        let cargo_metadata = CrateMetadata::cargo_metadata(manifest_path)?;
-        let config_supplier = CrateConfigSupplier::from(cargo_metadata);
-        bindgen_paths.add_layer(config_supplier);
-        Ok(BindgenLoader::new(bindgen_paths, GlobalConfig::default()))
+    fn config_crate_name(
+        &self,
+        source_path: &Utf8Path,
+        loader: &BindgenLoader,
+        metadata: &uniffi_meta::MetadataGroupMap,
+    ) -> Result<String> {
+        if let Some(crate_name) = &self.source.crate_name {
+            let crate_name = crate_name.replace('-', "_");
+            anyhow::ensure!(
+                metadata.contains_key(&crate_name),
+                "--crate {crate_name} is not a component in {source_path}"
+            );
+            return Ok(crate_name);
+        }
+
+        let source_name = loader.source_basename(source_path);
+        if metadata.contains_key(source_name) {
+            return Ok(source_name.to_owned());
+        }
+        if metadata.len() == 1 {
+            return Ok(metadata.keys().next().expect("one component").clone());
+        }
+        bail!(
+            "cannot select a component for --config in {source_path}; pass --crate with a component name"
+        )
     }
 }
 
-/// Implements the `--config` flag: every crate uses the same config file.
-///
-/// uniffi-rs 0.32 removed `BindgenPaths::add_config_override_layer`, which did
-/// the same thing. uniffi-rs 0.32 ignores a config path that does not exist,
-/// so `create_loader` checks that the file exists.
-struct ConfigOverrideLayer(Utf8PathBuf);
+/// Use the explicit config file for one component only.
+struct ConfigOverrideLayer {
+    crate_name: String,
+    config_path: Utf8PathBuf,
+}
 
 impl BindgenPathsLayer for ConfigOverrideLayer {
-    fn get_config_path(&self, _crate_name: &str) -> Option<Utf8PathBuf> {
-        Some(self.0.clone())
+    fn get_config_path(&self, crate_name: &str) -> Option<Utf8PathBuf> {
+        (crate_name == self.crate_name).then(|| self.config_path.clone())
     }
 }
 
