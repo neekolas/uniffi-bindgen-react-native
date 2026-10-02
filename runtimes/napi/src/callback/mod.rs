@@ -35,6 +35,8 @@
 //! This module handles BOTH simple callbacks (fire-and-forget) AND VTable callbacks
 //! (blocking with return values and RustCallStatus handling).
 
+mod wake;
+
 use std::ffi::c_void;
 use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -102,6 +104,8 @@ struct CallbackUserData {
     ret_size: usize,
     /// Future wake notifications have scalar input and no synchronous output.
     continuation: bool,
+    /// Dedicated scalar wake queue; owned by the environment cleanup hook.
+    wake_tsfn: napi::sys::napi_threadsafe_function,
     /// Thread-safe function for dispatching to `owner_thread`.
     tsfn: Mutex<Option<ThreadsafeFunction<DispatchPayload, ErrorStrategy::Fatal>>>,
     /// Reference to the Module, needed for fn_pointer wrapping (Callback-typed args).
@@ -167,7 +171,7 @@ pub extern "C" fn on_js_thread(args: *const u8, ret: *mut u8, user_data: *const 
     // SAFETY: `user_data` was created via `Box::into_raw` and leaked.
     let ud = unsafe { &*(user_data as *const CallbackUserData) };
 
-    if ud.env_state.is_shutting_down() {
+    if ud.env_state.is_shutting_down() || ud.module.is_unloading() {
         // Zero out the return buffer so the caller gets a deterministic value.
         if !ret.is_null() {
             let ret_size = ud.ret_size;
@@ -371,6 +375,11 @@ pub extern "C" fn dispatch_to_js_thread(
     // SAFETY: `user_data` was created via `Box::into_raw` and leaked.
     let ud = unsafe { &*(user_data as *const CallbackUserData) };
 
+    if ud.continuation {
+        // This queue owns every copied wake until delivery or teardown.
+        wake::enqueue(ud, args, user_data);
+        return;
+    }
     if ud.env_state.is_shutting_down() {
         return;
     }
@@ -387,19 +396,12 @@ pub extern "C" fn dispatch_to_js_thread(
     // Compute ret_len: for out_return=true, ret_len=0 (returns are via out-pointer).
     let ret_len = ud.ret_size;
 
-    // A wake can run while a transport holds a mutex that the next poll needs.
-    // Waiting for JS here would let that poll block the JS thread and the wake.
-    let (reply, receive) = if ud.continuation {
-        (None, None)
-    } else {
-        let (tx, rx) = sync_channel(1);
-        (Some(tx), Some(rx))
-    };
+    let (tx, rx) = sync_channel(1);
 
     let payload = DispatchPayload {
         args: args_copy,
         ret_len,
-        reply,
+        reply: Some(tx),
         user_data,
     };
 
@@ -411,17 +413,9 @@ pub extern "C" fn dispatch_to_js_thread(
             eprintln!("uniffi-runtime-napi: dispatch_to_js_thread has no ThreadsafeFunction");
             return;
         };
-        let mode = if ud.continuation {
-            ThreadsafeFunctionCallMode::NonBlocking
-        } else {
-            ThreadsafeFunctionCallMode::Blocking
-        };
-        tsfn.call(payload, mode);
+        tsfn.call(payload, ThreadsafeFunctionCallMode::Blocking);
     }
 
-    let Some(rx) = receive else {
-        return;
-    };
     // Block until the JS thread sends back the return bytes.
     match rx.recv() {
         Ok(ret_bytes) => {
@@ -544,11 +538,18 @@ pub fn create_callback_user_data(
         out_return: def.out_return,
         ret_size,
         continuation,
+        wake_tsfn: std::ptr::null_mut(),
         tsfn: Mutex::new(None),
         module: Arc::clone(module),
         registration: Arc::clone(registration),
     });
     let userdata_ptr = Box::into_raw(userdata);
+
+    if continuation {
+        // SAFETY: no trampoline can use this state before registration returns.
+        unsafe { (*userdata_ptr).wake_tsfn = wake::create(env, &(*userdata_ptr).env_state)? };
+        return Ok(userdata_ptr as *const c_void);
+    }
 
     // Create a ThreadsafeFunction for cross-thread dispatch.
     // The TSFN callback will call `on_js_thread` with the payload's args.

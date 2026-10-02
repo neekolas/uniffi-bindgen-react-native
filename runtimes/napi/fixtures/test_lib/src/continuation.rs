@@ -23,3 +23,16 @@ pub extern "C" fn uniffi_test_start_locked_wake(callback: SimpleCallback, handle
 pub extern "C" fn uniffi_test_read_after_wake() -> u64 {
     *RESOURCE.lock().unwrap()
 }
+
+static SAVED_WAKE: Mutex<Option<SimpleCallback>> = Mutex::new(None);
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_save_wake(callback: SimpleCallback) {
+    *SAVED_WAKE.lock().unwrap() = Some(callback);
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_invoke_saved_wake() {
+    let callback = *SAVED_WAKE.lock().unwrap();
+    callback.unwrap()(902, 0);
+}
