@@ -24,7 +24,7 @@ pub(super) fn count(index: usize) {
 }
 
 #[cfg(feature = "test-hooks")]
-#[napi_derive::napi(js_name = "__testWakeCounts")]
+#[napi_derive::napi(js_name = "__testWakeCounts", skip_typescript)]
 pub fn test_wake_counts() -> Vec<u32> {
     COUNTS
         .iter()
@@ -33,13 +33,13 @@ pub fn test_wake_counts() -> Vec<u32> {
 }
 
 #[cfg(feature = "test-hooks")]
-#[napi_derive::napi(js_name = "__testLimitNextWakeQueue")]
+#[napi_derive::napi(js_name = "__testLimitNextWakeQueue", skip_typescript)]
 pub fn test_limit_next_wake_queue() {
     NEXT_QUEUE_LIMIT.store(1, std::sync::atomic::Ordering::SeqCst);
 }
 
 #[cfg(feature = "test-hooks")]
-#[napi_derive::napi(js_name = "__testCloseWakeQueues")]
+#[napi_derive::napi(js_name = "__testCloseWakeQueues", skip_typescript)]
 pub fn test_close_wake_queues(env: Env) {
     for handle in crate::env_state(env.raw()).close() {
         unsafe {
