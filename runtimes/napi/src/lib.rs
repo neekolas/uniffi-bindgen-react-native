@@ -152,6 +152,31 @@ impl EnvState {
         }
     }
 
+    /// Enqueue a scalar wake while teardown cannot release its handle.
+    ///
+    /// # Safety
+    /// `raw` must have been registered in this environment. The caller owns
+    /// `data` unless napi returns `napi_ok`.
+    pub(crate) unsafe fn enqueue_wake(
+        &self,
+        raw: napi::sys::napi_threadsafe_function,
+        data: *mut std::ffi::c_void,
+    ) -> napi::sys::napi_status {
+        let handles = self.tsfns();
+        if handles.is_none() {
+            return napi::sys::Status::napi_closing;
+        }
+        // This call is nonblocking. close() cannot take the handles until it
+        // returns, so raw cannot be finalized during this call.
+        unsafe {
+            napi::sys::napi_call_threadsafe_function(
+                raw,
+                data,
+                napi::sys::ThreadsafeFunctionCallMode::nonblocking,
+            )
+        }
+    }
+
     /// Close this environment to new handles and take the ones it holds.
     ///
     /// The guard is released with the returned value, so the caller aborts without holding the

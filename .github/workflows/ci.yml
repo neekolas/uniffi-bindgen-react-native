@@ -4,7 +4,7 @@ on:
   push:
     branches: ["main"]
   pull_request:
-    branches: ["main"]
+    branches: ["main", "uniffi-0.32/xmtp-embedding"]
 
 env:
   CARGO_TERM_COLOR: always

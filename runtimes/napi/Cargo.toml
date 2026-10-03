@@ -6,6 +6,10 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+# Private allocation counters used by the native regression tests.
+test-hooks = []
+
 [dependencies]
 napi = { version = "2.16", default-features = false, features = ["napi6"] }
 napi-derive = "2.16"

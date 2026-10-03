@@ -12,9 +12,9 @@
 //!   converts to JS values, calls the JS function, and writes the return value.
 //! - [`dispatch_to_js_thread`]: runs off the JS thread, copies the arg buffer,
 //!   sends it to the JS thread via a ThreadsafeFunction, and blocks on a
-//!   sync_channel for the return value.
-//! - [`is_js_thread`]: returns whether the current thread is the one that registered the
-//!   callback, and so may touch its napi values directly.
+//!   sync_channel for the return value. Future continuations only enqueue a notification.
+//! - [`is_js_thread`]: permits direct calls on the owning thread, except for
+//!   future continuations, which always use the queue.
 //!
 //! Each callback closure is associated with a [`CallbackUserData`] struct that is
 //! leaked to a stable address and passed as `user_data: *const c_void` through the
@@ -34,6 +34,8 @@
 //!
 //! This module handles BOTH simple callbacks (fire-and-forget) AND VTable callbacks
 //! (blocking with return values and RustCallStatus handling).
+
+mod wake;
 
 use std::ffi::c_void;
 use std::sync::mpsc::{sync_channel, SyncSender};
@@ -100,6 +102,10 @@ struct CallbackUserData {
     out_return: bool,
     /// Precomputed size of the return value in bytes (0 for void or out_return).
     ret_size: usize,
+    /// Future wake notifications have scalar input and no synchronous output.
+    continuation: bool,
+    /// Dedicated scalar wake queue; owned by the environment cleanup hook.
+    wake_tsfn: napi::sys::napi_threadsafe_function,
     /// Thread-safe function for dispatching to `owner_thread`.
     tsfn: Mutex<Option<ThreadsafeFunction<DispatchPayload, ErrorStrategy::Fatal>>>,
     /// Reference to the Module, needed for fn_pointer wrapping (Callback-typed args).
@@ -129,14 +135,13 @@ unsafe impl Sync for CallbackUserData {}
 // ---------------------------------------------------------------------------
 
 /// Payload sent from the calling thread to the JS thread via ThreadsafeFunction.
-/// Payload sent from the calling thread to the JS thread via ThreadsafeFunction.
 struct DispatchPayload {
     /// Copied arg bytes from the core trampoline's flat buffer.
     args: Vec<u8>,
     /// Number of bytes expected in the return buffer.
     ret_len: usize,
-    /// Channel to send the return bytes back to the calling thread.
-    reply: SyncSender<Vec<u8>>,
+    /// Reply for a synchronous call; absent for a future wake notification.
+    reply: Option<SyncSender<Vec<u8>>>,
     /// The callback's user_data pointer, forwarded so the TSFN handler can
     /// call `on_js_thread`.
     user_data: *const c_void,
@@ -166,7 +171,7 @@ pub extern "C" fn on_js_thread(args: *const u8, ret: *mut u8, user_data: *const 
     // SAFETY: `user_data` was created via `Box::into_raw` and leaked.
     let ud = unsafe { &*(user_data as *const CallbackUserData) };
 
-    if ud.env_state.is_shutting_down() {
+    if ud.env_state.is_shutting_down() || ud.module.is_unloading() {
         // Zero out the return buffer so the caller gets a deterministic value.
         if !ret.is_null() {
             let ret_size = ud.ret_size;
@@ -352,13 +357,13 @@ pub extern "C" fn on_js_thread(args: *const u8, ret: *mut u8, user_data: *const 
     }
 }
 
-/// Cross-thread path: copies the arg buffer, dispatches to the JS thread via
-/// ThreadsafeFunction, and blocks until the JS thread sends back the return bytes.
+/// Copy input and dispatch it through the owning thread's ThreadsafeFunction.
+/// Future continuations return after enqueue; other callbacks wait for a reply.
 ///
 /// # Safety
 ///
-/// - Must NOT be called on `owner_thread`: that thread is the only one that can drain its own
-///   event loop to produce the reply, so the blocking recv would deadlock.
+/// - Only a future continuation may use this path on `owner_thread`. It has no
+///   reply. All other callbacks must start on another thread to avoid deadlock.
 /// - `on_js_thread_fn` must be a valid function pointer.
 /// - `args`, `ret`, and `user_data` follow the same contracts as `on_js_thread`.
 pub extern "C" fn dispatch_to_js_thread(
@@ -370,6 +375,11 @@ pub extern "C" fn dispatch_to_js_thread(
     // SAFETY: `user_data` was created via `Box::into_raw` and leaked.
     let ud = unsafe { &*(user_data as *const CallbackUserData) };
 
+    if ud.continuation {
+        // This queue owns every copied wake until delivery or teardown.
+        wake::enqueue(ud, args, user_data);
+        return;
+    }
     if ud.env_state.is_shutting_down() {
         return;
     }
@@ -386,13 +396,12 @@ pub extern "C" fn dispatch_to_js_thread(
     // Compute ret_len: for out_return=true, ret_len=0 (returns are via out-pointer).
     let ret_len = ud.ret_size;
 
-    // Create the rendezvous channel.
     let (tx, rx) = sync_channel(1);
 
     let payload = DispatchPayload {
         args: args_copy,
         ret_len,
-        reply: tx,
+        reply: Some(tx),
         user_data,
     };
 
@@ -427,7 +436,7 @@ pub extern "C" fn dispatch_to_js_thread(
     }
 }
 
-/// Returns whether the current thread is the JS thread that registered this callback.
+/// Returns whether this callback can run directly on its owning JS thread.
 ///
 /// Per callback, not per process. Each JS thread (a Node worker, say) owns napi values only for
 /// itself, so a single process-wide answer is wrong for every thread but one: it sends a JS thread
@@ -440,7 +449,9 @@ pub extern "C" fn dispatch_to_js_thread(
 pub extern "C" fn is_js_thread(user_data: *const c_void) -> bool {
     // SAFETY: `user_data` was created via `Box::into_raw` and leaked.
     let ud = unsafe { &*(user_data as *const CallbackUserData) };
-    ud.owner_thread == std::thread::current().id()
+    // Always queue future continuations, including same-thread READY results.
+    // The next Rust poll must start after the current native callback returns.
+    !ud.continuation && ud.owner_thread == std::thread::current().id()
 }
 
 // ---------------------------------------------------------------------------
@@ -467,6 +478,20 @@ pub fn create_callback_user_data(
         .spec_callbacks()
         .get(callback_name)
         .ok_or_else(|| napi::Error::from_reason(format!("Unknown callback: {callback_name}")))?;
+
+    let continuation = callback_name == "RustFutureContinuationCallback";
+    if continuation
+        && (!matches!(
+            def.args.as_slice(),
+            [FfiTypeDesc::Handle, FfiTypeDesc::Int8]
+        ) || !matches!(def.ret, FfiTypeDesc::Void)
+            || def.has_rust_call_status
+            || def.out_return)
+    {
+        return Err(napi::Error::from_reason(
+            "Invalid RustFutureContinuationCallback signature",
+        ));
+    }
 
     // Compute ArgLayout. When out_return is true, we must include an extra
     // VoidPointer arg (for the out-return pointer) between the declared args
@@ -512,11 +537,19 @@ pub fn create_callback_user_data(
         has_rust_call_status: def.has_rust_call_status,
         out_return: def.out_return,
         ret_size,
+        continuation,
+        wake_tsfn: std::ptr::null_mut(),
         tsfn: Mutex::new(None),
         module: Arc::clone(module),
         registration: Arc::clone(registration),
     });
     let userdata_ptr = Box::into_raw(userdata);
+
+    if continuation {
+        // SAFETY: no trampoline can use this state before registration returns.
+        unsafe { (*userdata_ptr).wake_tsfn = wake::create(env, &(*userdata_ptr).env_state)? };
+        return Ok(userdata_ptr as *const c_void);
+    }
 
     // Create a ThreadsafeFunction for cross-thread dispatch.
     // The TSFN callback will call `on_js_thread` with the payload's args.
@@ -535,7 +568,9 @@ pub fn create_callback_user_data(
                     payload.user_data,
                 );
                 // Send the return bytes back to the calling thread.
-                let _ = payload.reply.send(ret_buf);
+                if let Some(reply) = payload.reply {
+                    let _ = reply.send(ret_buf);
+                }
 
                 // Return empty vec—the TSFN callback mechanism requires a Vec<JsUnknown>
                 // but we've handled everything ourselves.
