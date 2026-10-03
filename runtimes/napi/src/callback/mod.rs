@@ -35,6 +35,8 @@
 //! This module handles BOTH simple callbacks (fire-and-forget) AND VTable callbacks
 //! (blocking with return values and RustCallStatus handling).
 
+#[cfg(feature = "test-hooks")]
+mod setup_tests;
 mod wake;
 
 use std::ffi::c_void;
@@ -53,6 +55,40 @@ use crate::napi_utils;
 use uniffi_runtime_core::ffi_c_types::RustBufferC;
 use uniffi_runtime_core::slot;
 use uniffi_runtime_core::{ArgLayout, FfiTypeDesc, Module};
+
+/// Own setup state until every fallible initialization step succeeds.
+struct CallbackSetup {
+    userdata: Option<Box<CallbackUserData>>,
+}
+
+impl CallbackSetup {
+    fn finish(mut self) -> *const c_void {
+        #[cfg(feature = "test-hooks")]
+        setup_tests::count(4);
+        Box::into_raw(self.userdata.take().expect("setup state exists")) as *const c_void
+    }
+}
+
+impl Drop for CallbackSetup {
+    fn drop(&mut self) {
+        if let Some(userdata) = self.userdata.take() {
+            // Setup runs on the owning JS thread. No trampoline has this state yet.
+            let status =
+                unsafe { napi::sys::napi_delete_reference(userdata.raw_env, userdata.fn_ref) };
+            #[cfg(feature = "test-hooks")]
+            setup_tests::count(if status == napi::sys::Status::napi_ok {
+                1
+            } else {
+                9
+            });
+            #[cfg(not(feature = "test-hooks"))]
+            let _ = status;
+            drop(userdata);
+            #[cfg(feature = "test-hooks")]
+            setup_tests::count(3);
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // RustCallStatusForVTable
@@ -517,15 +553,33 @@ pub fn create_callback_user_data(
 
     // Create a GC-preventing reference to the JS function.
     let mut fn_ref: napi::sys::napi_ref = std::ptr::null_mut();
-    let ref_status =
-        unsafe { napi::sys::napi_create_reference(env.raw(), js_fn.raw(), 1, &mut fn_ref) };
+    let ref_status = unsafe {
+        napi::sys::napi_create_reference(
+            env.raw(),
+            {
+                #[cfg(feature = "test-hooks")]
+                if setup_tests::take_failure(setup_tests::REFERENCE) {
+                    std::ptr::null_mut()
+                } else {
+                    js_fn.raw()
+                }
+                #[cfg(not(feature = "test-hooks"))]
+                js_fn.raw()
+            },
+            1,
+            &mut fn_ref,
+        )
+    };
     if ref_status != napi::sys::Status::napi_ok {
         return Err(napi::Error::from_reason(format!(
             "Failed to create reference for callback '{callback_name}'"
         )));
     }
 
-    // Allocate the userdata and leak it to a stable address.
+    #[cfg(feature = "test-hooks")]
+    setup_tests::count(0);
+
+    // The Box gives setup a stable address without transferring ownership.
     let userdata = Box::new(CallbackUserData {
         owner_thread: std::thread::current().id(),
         env_state: crate::env_state(env.raw()),
@@ -543,21 +597,35 @@ pub fn create_callback_user_data(
         module: Arc::clone(module),
         registration: Arc::clone(registration),
     });
-    let userdata_ptr = Box::into_raw(userdata);
+    #[cfg(feature = "test-hooks")]
+    setup_tests::count(2);
+    let mut setup = CallbackSetup {
+        userdata: Some(userdata),
+    };
+    let userdata_ptr =
+        &mut **setup.userdata.as_mut().expect("setup state exists") as *mut CallbackUserData;
 
     if continuation {
         // SAFETY: no trampoline can use this state before registration returns.
         unsafe { (*userdata_ptr).wake_tsfn = wake::create(env, &(*userdata_ptr).env_state)? };
-        return Ok(userdata_ptr as *const c_void);
+        return Ok(setup.finish());
     }
 
     // Create a ThreadsafeFunction for cross-thread dispatch.
     // The TSFN callback will call `on_js_thread` with the payload's args.
+    #[cfg(feature = "test-hooks")]
+    setup_tests::fail_before(setup_tests::ORDINARY_FUNCTION, env)?;
     let noop_fn = env.create_function_from_closure("cb_tsfn_dispatch", |_ctx| Ok(()))?;
+    #[cfg(feature = "test-hooks")]
+    setup_tests::fail_before(setup_tests::ORDINARY_CREATE, env)?;
+    #[cfg(feature = "test-hooks")]
+    let finalizer = setup_tests::FinalizerCount;
     let tsfn: ThreadsafeFunction<DispatchPayload, ErrorStrategy::Fatal> = noop_fn
         .create_threadsafe_function(
             0,
             move |ctx: napi::threadsafe_function::ThreadSafeCallContext<DispatchPayload>| {
+                #[cfg(feature = "test-hooks")]
+                let _keep_finalizer = &finalizer;
                 let payload = ctx.value;
 
                 let mut ret_buf = vec![0u8; payload.ret_len];
@@ -579,22 +647,23 @@ pub fn create_callback_user_data(
         )?;
     let mut tsfn = tsfn;
 
-    // Register the raw TSFN handle so the env cleanup hook can abort it at shutdown.
-    // SAFETY: `userdata_ptr` is valid and uniquely owned here.
-    unsafe { (*userdata_ptr).env_state.register_tsfn(tsfn.raw()) };
+    #[cfg(feature = "test-hooks")]
+    setup_tests::count(6);
 
-    // Unref the TSFN so it does not prevent the Node.js event loop from exiting.
+    // A setup failure releases the local TSFN. The environment does not own it yet.
     tsfn.unref(env)?;
+    #[cfg(feature = "test-hooks")]
+    setup_tests::fail_before(setup_tests::ORDINARY_UNREF, env)?;
+    let raw = tsfn.raw();
 
-    // Store the TSFN in the userdata.
-    // SAFETY: `userdata_ptr` is valid and uniquely owned. We are still on the
-    // registering thread; no concurrent access is possible yet.
+    // The TSFN finalizer owns only its dispatch closure, never CallbackUserData.
+    // No native call can enqueue a payload before registration returns.
     unsafe {
-        let tsfn_slot = &mut (*userdata_ptr).tsfn;
-        *tsfn_slot.get_mut().expect("mutex not poisoned") = Some(tsfn);
+        *(*userdata_ptr).tsfn.get_mut().expect("mutex not poisoned") = Some(tsfn);
+        (*userdata_ptr).env_state.register_tsfn(raw);
     }
-
-    Ok(userdata_ptr as *const c_void)
+    // There are no fallible setup steps after the environment takes this handle.
+    Ok(setup.finish())
 }
 
 // ---------------------------------------------------------------------------

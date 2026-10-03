@@ -109,6 +109,13 @@ npm test
 The debug test build enables the private `test-hooks` Cargo feature. The default
 release build excludes these test exports.
 
+After the debug build and fixture builds, run the setup controls with
+`node --test tests/callback_setup.test.mjs` from this directory. They check
+reference and state rollback in a live Node environment. The unref controls use
+a valid handle, then inject an error status after a successful native unref.
+The ordinary TSFN create control injects an error before the napi-rs wrapper.
+It does not cover the wrapper's own failed-create allocation path.
+
 Requires Rust, Node.js, and a C compiler (for libffi).
 
 ## Project structure
