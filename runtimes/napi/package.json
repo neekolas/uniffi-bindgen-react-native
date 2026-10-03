@@ -54,7 +54,7 @@
   "scripts": {
     "build:ts": "tsc -p typescript",
     "build": "npm run build:ts && napi build --platform --release --js-package-name @ubjs/node",
-    "build:debug": "npm run build:ts && napi build --platform --js-package-name @ubjs/node",
+    "build:debug": "npm run build:ts && napi build --platform --features test-hooks --js-package-name @ubjs/node",
     "artifacts": "napi artifacts --dir artifacts",
     "create-npm-dirs": "napi create-npm-dir -t .",
     "assemble-root": "node ./scripts/assemble-root.mjs",

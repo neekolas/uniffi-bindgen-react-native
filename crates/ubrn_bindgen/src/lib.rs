@@ -10,7 +10,7 @@ mod switches;
 #[cfg(feature = "wasm")]
 mod wasm;
 #[cfg(feature = "wasm")]
-mod wasm_metadata;
+pub mod wasm_metadata;
 
 pub use self::{
     bindings::{generate_entrypoint, metadata::ModuleMetadata},

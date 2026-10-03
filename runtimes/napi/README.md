@@ -86,17 +86,35 @@ Rust code can call back into JavaScript. uniffi-runtime-napi handles two cases:
 
 This matters for async Rust code that runs work on background threads but needs to call foreign trait methods defined in JS.
 
+The scalar `RustFutureContinuationCallback` is queued on its owning JS thread.
+The caller returns without waiting for JS. The queue frees each notification
+after delivery, rejection, or environment shutdown. A notification queued before
+module unload cannot call JS after unload.
+
 ## Building
 
 ```sh
 # Build the native addon
 npm run build
 
-# Run tests (builds test fixtures first)
+# Build the test addon with private allocation counters
+npm run build:debug
+
+# Build test fixtures and run tests
 cd fixtures/test_lib && cargo build && cd ../..
 cd fixtures/uniffi-fixture-simple && cargo build && cd ../..
 npm test
 ```
+
+The debug test build enables the private `test-hooks` Cargo feature. The default
+release build excludes these test exports.
+
+After the debug build and fixture builds, run the setup controls with
+`node --test tests/callback_setup.test.mjs` from this directory. They check
+reference and state rollback in a live Node environment. The unref controls use
+a valid handle, then inject an error status after a successful native unref.
+The ordinary TSFN create control injects an error before the napi-rs wrapper.
+It does not cover the wrapper's own failed-create allocation path.
 
 Requires Rust, Node.js, and a C compiler (for libffi).
 
