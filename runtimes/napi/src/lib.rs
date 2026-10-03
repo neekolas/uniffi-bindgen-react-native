@@ -345,3 +345,21 @@ impl UniffiNativeModule {
         Ok(())
     }
 }
+
+#[cfg(feature = "test-hooks")]
+#[napi]
+impl UniffiNativeModule {
+    #[napi(js_name = "__testModuleOwners", skip_typescript)]
+    pub fn test_module_owners(&self) -> u32 {
+        self.module
+            .as_ref()
+            .map_or(0, |module| Arc::strong_count(module) as u32)
+    }
+    #[napi(js_name = "__testEnvironmentHandles", skip_typescript)]
+    pub fn test_environment_handles(&self, env: Env) -> u32 {
+        env_state(env.raw())
+            .tsfns()
+            .as_ref()
+            .map_or(0, |handles| handles.len() as u32)
+    }
+}

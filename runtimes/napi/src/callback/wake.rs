@@ -90,6 +90,8 @@ pub(super) fn create(
     env: &Env,
     state: &Arc<crate::EnvState>,
 ) -> napi::Result<sys::napi_threadsafe_function> {
+    #[cfg(feature = "test-hooks")]
+    super::setup_tests::fail_before(super::setup_tests::WAKE_NAME, env)?;
     let name = env.create_string("uniffi_future_wake")?;
     let mut raw = ptr::null_mut();
     let queue_limit = 0;
@@ -105,21 +107,52 @@ pub(super) fn create(
             env.raw(),
             ptr::null_mut(),
             ptr::null_mut(),
-            name.raw(),
+            {
+                #[cfg(feature = "test-hooks")]
+                if super::setup_tests::take_failure(super::setup_tests::WAKE_CREATE) {
+                    ptr::null_mut()
+                } else {
+                    name.raw()
+                }
+                #[cfg(not(feature = "test-hooks"))]
+                name.raw()
+            },
             queue_limit,
             1,
             ptr::null_mut(),
-            None,
+            {
+                #[cfg(feature = "test-hooks")]
+                {
+                    Some(super::setup_tests::wake_finalized)
+                }
+                #[cfg(not(feature = "test-hooks"))]
+                {
+                    None
+                }
+            },
             ptr::null_mut(),
             Some(deliver),
             &mut raw,
         )
     })?;
+    #[cfg(feature = "test-hooks")]
+    super::setup_tests::count(6);
     let status = unsafe { sys::napi_unref_threadsafe_function(env.raw(), raw) };
+    #[cfg(feature = "test-hooks")]
+    let status = if status == sys::Status::napi_ok
+        && super::setup_tests::take_failure(super::setup_tests::WAKE_UNREF)
+    {
+        // Keep the real unref and handle. Inject only its recoverable error branch.
+        unsafe { super::setup_tests::invalid_status(env) }
+    } else {
+        status
+    };
     if status != sys::Status::napi_ok {
         unsafe {
             sys::napi_release_threadsafe_function(raw, sys::ThreadsafeFunctionReleaseMode::abort)
         };
+        #[cfg(feature = "test-hooks")]
+        super::setup_tests::count(7);
         return Err(napi::Error::from_reason("Cannot unref future wake queue"));
     }
     unsafe { state.register_tsfn(raw) };
