@@ -4,7 +4,16 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/
  */
 import { UniffiHandleMap } from "../src/handle-map";
-import { Asserts, test } from "../testing/asserts";
+import {
+  FfiConverterObjectWithCallbacks,
+  type UniffiObjectFactory,
+} from "../src/objects";
+import { Asserts, test, asyncTest } from "../testing/asserts";
+import {
+  uniffiRustCallAsync,
+  uniffiRustFutureHandleCount,
+} from "../src/async-rust-call";
+import { UniffiRustCaller } from "../src/rust-call";
 
 function isStaleHandleError(e: any): boolean {
   return e instanceof Error && e.message.includes("handle map");
@@ -167,3 +176,174 @@ test("clone increments size by one", (t) => {
   map.clone(h);
   t.assertEqual(map.size, 3);
 });
+
+// Model the native owner boundary, while retaining the real handle-map code.
+// The C++ lifetime test separately exercises these hooks in a real JSI runtime.
+type AllocatorHooks = {
+  allocate(kind: string): bigint;
+  release(handle: bigint): void;
+  owns(handle: bigint): boolean;
+};
+const nativeGlobal = globalThis as typeof globalThis & {
+  __ubrnHandleAllocator?: AllocatorHooks;
+};
+
+function withNativeAllocators(
+  body: (
+    make: () => {
+      hooks: AllocatorHooks;
+      stop: () => void;
+      kinds: string[];
+      released: bigint[];
+    },
+  ) => void,
+): void {
+  const saved = nativeGlobal.__ubrnHandleAllocator;
+  let next = BigInt(101);
+  try {
+    body(() => {
+      let active = true;
+      const live = new Set<bigint>();
+      const kinds: string[] = [];
+      const released: bigint[] = [];
+      const hooks: AllocatorHooks = {
+        allocate(kind) {
+          if (!active) throw new Error("Runtime has stopped");
+          const handle = next;
+          next += BigInt(2);
+          live.add(handle);
+          kinds.push(kind);
+          return handle;
+        },
+        release(handle) {
+          if (live.delete(handle)) released.push(handle);
+        },
+        owns: (handle) => active && live.has(handle),
+      };
+      return {
+        hooks,
+        stop: () => {
+          active = false;
+        },
+        kinds,
+        released,
+      };
+    });
+  } finally {
+    if (saved === undefined) delete nativeGlobal.__ubrnHandleAllocator;
+    else nativeGlobal.__ubrnHandleAllocator = saved;
+  }
+}
+
+test("native handles share one allocator across all callback kinds", (t) => {
+  withNativeAllocators((make) => {
+    const owner = make();
+    nativeGlobal.__ubrnHandleAllocator = owner.hooks;
+    const callbacks = new UniffiHandleMap<string>();
+    const continuations = new UniffiHandleMap<string>(
+      "rust-future-continuation",
+    );
+    const futures = new UniffiHandleMap<string>("foreign-future-drop");
+    const handles = [
+      callbacks.insert("callback"),
+      continuations.insert("poll"),
+      futures.insert("future"),
+    ];
+    t.assertEqual(new Set(handles).size, 3);
+    t.assertEqual(
+      owner.kinds.join(","),
+      "callback,rust-future-continuation,foreign-future-drop",
+    );
+    const clone = callbacks.clone(handles[0]);
+    t.assertNotEqual(clone, handles[0]);
+    callbacks.remove(handles[0]);
+    callbacks.remove(handles[0]);
+    t.assertEqual(owner.released.length, 1);
+    t.assertEqual(callbacks.get(clone), "callback");
+  });
+});
+
+test("old maps never adopt the replacement runtime allocator", (t) => {
+  withNativeAllocators((make) => {
+    const first = make();
+    nativeGlobal.__ubrnHandleAllocator = first.hooks;
+    const old = new UniffiHandleMap<string>();
+    const retained = old.insert("old");
+    first.stop();
+    const second = make();
+    nativeGlobal.__ubrnHandleAllocator = second.hooks;
+    const current = new UniffiHandleMap<string>();
+    const live = current.insert("new");
+    t.assertNotEqual(live, retained);
+    t.assertFalse(old.has(retained));
+    t.assertThrows(isStaleHandleError, () => old.get(retained));
+    t.assertThrows(isStaleHandleError, () => old.clone(retained));
+    t.assertThrows(
+      (e) => e instanceof Error && e.message.includes("stopped"),
+      () => old.insert("too late"),
+    );
+    old.remove(retained);
+    t.assertEqual(first.released.length, 1);
+    t.assertEqual(second.released.length, 0);
+    t.assertEqual(current.get(live), "new");
+  });
+});
+
+test("a map may bind at first insert but never switches after allocating", (t) => {
+  withNativeAllocators((make) => {
+    delete nativeGlobal.__ubrnHandleAllocator;
+    const early = new UniffiHandleMap<string>();
+    const fallback = new UniffiHandleMap<string>();
+    t.assertEqual(fallback.insert("node"), BigInt(1));
+    const owner = make();
+    nativeGlobal.__ubrnHandleAllocator = owner.hooks;
+    t.assertEqual(early.insert("native"), BigInt(101));
+    t.assertEqual(fallback.insert("still node"), BigInt(3));
+  });
+});
+
+test("stale odd object handles never become Rust pointers", (t) => {
+  let created = false;
+  const factory = {
+    create: (handle: bigint) => {
+      created = true;
+      return handle;
+    },
+  } as unknown as UniffiObjectFactory<bigint>;
+  const converter = new FfiConverterObjectWithCallbacks(factory);
+  t.assertThrows(isStaleHandleError, () => converter.lift(BigInt(99)));
+  t.assertFalse(created);
+  t.assertEqual(converter.lift(BigInt(100)), BigInt(100));
+  t.assertTrue(created);
+});
+
+asyncTest(
+  "failed poll registration releases its continuation and Rust future",
+  async (t) => {
+    const before = uniffiRustFutureHandleCount();
+    let freed = 0;
+    const error = new Error("poll registration failed");
+    try {
+      await uniffiRustCallAsync(
+        new UniffiRustCaller(() => ({ code: 0 })),
+        () => BigInt(2),
+        () => {
+          throw error;
+        },
+        () => {},
+        () => 0,
+        () => {
+          ++freed;
+        },
+        (value) => value,
+        () => "",
+      );
+      t.fail("failed poll unexpectedly completed");
+    } catch (caught) {
+      t.assertTrue(caught === error);
+    }
+    t.assertEqual(uniffiRustFutureHandleCount(), before);
+    t.assertEqual(freed, 1);
+    t.end();
+  },
+);

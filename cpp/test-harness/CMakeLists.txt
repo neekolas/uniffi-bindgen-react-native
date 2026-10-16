@@ -73,3 +73,12 @@ if (MSVC)
     target_compile_definitions(test-runner PRIVATE NOMINMAX)
 endif ()
 target_link_libraries(test-runner ${HERMES_LIB_NAME})
+
+# Exercises the production callback queue with a real JSI runtime.
+add_executable(runtime-lifetime-test runtime-lifetime.cpp)
+target_link_libraries(runtime-lifetime-test ${HERMES_LIB_NAME})
+if (MSVC)
+    target_compile_definitions(runtime-lifetime-test PRIVATE NOMINMAX)
+endif ()
+enable_testing()
+add_test(NAME runtime-lifetime COMMAND runtime-lifetime-test)

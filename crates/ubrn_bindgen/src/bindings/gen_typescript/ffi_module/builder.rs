@@ -47,7 +47,7 @@ impl TsFfiModule {
         });
         let has_foreign_future = definitions.iter().any(|d| {
             matches!(d,
-                FfiDefinitionDecl::Struct(s) if s.name == "UniffiForeignFuture"
+                FfiDefinitionDecl::Struct(s) if s.name == "UniffiForeignFutureDroppedCallbackStruct"
             )
         });
         // Only the JSI file declares the functions.

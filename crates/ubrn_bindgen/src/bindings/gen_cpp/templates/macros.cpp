@@ -19,7 +19,21 @@
 
 {%- macro rust_fn_caller(module_name, func) %}
 {%- call cpp_fn_from_js_decl(func) %} {
+    {%- if func.is_future_free() %}
+    auto handle = uniffi_jsi::Bridging<uint64_t>::fromJs(rt, callInvoker, args[0]);
+    generation->retireFuture(handle);
+    return jsi::Value::undefined();
+    {%- else %}
+    {%- if func.is_future_operation() %}
+    auto handle = uniffi_jsi::Bridging<uint64_t>::fromJs(rt, callInvoker, args[0]);
+    auto futureLease = generation->acquireFuture(handle);
+    if (!futureLease) throw jsi::JSError(rt, "Native future is no longer available");
+    {%- endif %}
+    {%- if func.native_future_free(ci).is_some() %}
+    if (!generation->active) throw jsi::JSError(rt, "JavaScript runtime is unavailable");
+    {%- endif %}
     {%- call cpp_fn_rust_caller_body(func) %}
+    {%- endif %}
 }
 {%- endmacro %}
 
@@ -82,6 +96,16 @@ jsi::Value {{ module_name }}::{% call cpp_func_name(func) %}(jsi::Runtime& rt, c
             {%   endif %}&status
             {%- endif %}
         );
+        {%- endif %}
+
+        {%- if let Some(free) = func.native_future_free(ci) %}
+        generation->rustFutures.emplace(value, std::make_shared<uniffi_runtime::NativeFuture>(
+            [value](bool completed) { {{ ci.cpp_namespace() }}::native_discard::dispose_{{ func.name() }}(value, completed); }));
+        // UBRN_NATIVE_FUTURE {{ func.name() }}
+        {%- endif %}
+
+        {%- if func.is_future_complete() %}
+        futureLease.completed();
         {%- endif %}
 
         {#- Now copy the call status into JS. #}

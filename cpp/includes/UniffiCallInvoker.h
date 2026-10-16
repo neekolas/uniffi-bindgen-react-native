@@ -5,84 +5,178 @@
  */
 #pragma once
 #include <ReactCommon/CallInvoker.h>
+#include <algorithm>
 #include <condition_variable>
-#include <future>
 #include <jsi/jsi.h>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
+#include <string>
 #include <thread>
+#include <vector>
 
 namespace uniffi_runtime {
 namespace jsi = facebook::jsi;
 namespace react = facebook::react;
 using UniffiCallFunc = std::function<void(jsi::Runtime &)>;
 
-/**
- * A wrapper class to invoke a callback function on the JS thread.
+/** Dispatches work to one JS runtime generation.
  *
- * The is intended to have two methods:
- *
- * 1. `invokeBlocking`, which will wait until the JS thread is available,
- *    call the callback function, and then return.
- * 2. `invokeNonBlocking`, which will schedule the callback function to be
- * called when the JS thread is available, but not wait for it to complete.
- *
- * Conceptually, the `invokeNonBlocking` method should be more useful than it
- * actually is, however: the generated C++ cannot easily tell if the callback
- * function is synchronous or not.
- *
- * Other optimizations might also be available to use the `invokeNonBlocking`
- * method (e.g. `void` returns), were it not for the error cases.
- *
- * Until we can tell if the callback is async, we always use `invokeBlocking`,
- * and leave `invokeNonBlocking` unimplemented.
+ * Construct and invalidate on the JS thread. The owner must call invalidate()
+ * before destroying the runtime. stop() may be called from any thread to reject
+ * new work and release workers whose queued calls have not started. A running
+ * call must finish before its worker can return: it may reference that worker's
+ * native output arguments.
  */
 class UniffiCallInvoker {
-private:
+  enum class Phase { Pending, Running, Complete, Cancelled };
+  struct Task {
+    explicit Task(UniffiCallFunc f) : func(std::move(f)) {}
+    UniffiCallFunc func;
+    Phase phase = Phase::Pending;
+    std::string error;
+    std::condition_variable completed;
+  };
+  struct State {
+    std::mutex mutex;
+    bool stopped = false;
+    std::vector<std::shared_ptr<Task>> tasks;
+  };
+
   std::shared_ptr<react::CallInvoker> callInvoker_;
-  std::thread::id threadId_;
+  const std::thread::id threadId_;
+  std::shared_ptr<State> state_ = std::make_shared<State>();
+
+  static void run(const std::shared_ptr<State> &state,
+                  const std::shared_ptr<Task> &task, jsi::Runtime *rt) {
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      if (task->phase != Phase::Pending) {
+        return;
+      }
+      task->phase = Phase::Running;
+    }
+    // Never hold the state lock while invoking JS or destroying its captures.
+    // Both operations can call back into native code.
+    std::string error;
+    try {
+      task->func(*rt);
+    } catch (const std::exception &exception) {
+      // A JSError can own a JS value. Destroy it on this thread, and forward
+      // only its message to the waiting native thread.
+      error = exception.what();
+      if (error.empty()) {
+        error = "JavaScript callback failed";
+      }
+    } catch (...) {
+      error = "JavaScript callback failed";
+    }
+    task->func = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      task->error = std::move(error);
+      task->phase = Phase::Complete;
+      auto &tasks = state->tasks;
+      tasks.erase(std::remove(tasks.begin(), tasks.end(), task), tasks.end());
+    }
+    task->completed.notify_all();
+  }
+
+  std::shared_ptr<Task> enqueue(jsi::Runtime *rt, UniffiCallFunc func) {
+    auto task = std::make_shared<Task>(std::move(func));
+    auto state = state_;
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      if (state->stopped) {
+        return nullptr;
+      }
+      state->tasks.push_back(task);
+    }
+    // Capture task storage by value. stop() can release the waiting worker
+    // before the React Native queue runs (or discards) this closure.
+    callInvoker_->invokeAsync(
+        std::function<void()>([state, task, rt] { run(state, task, rt); }));
+    return task;
+  }
 
 public:
-  UniffiCallInvoker(std::shared_ptr<react::CallInvoker> callInvoker)
-      : callInvoker_(callInvoker), threadId_(std::this_thread::get_id()) {}
+  explicit UniffiCallInvoker(std::shared_ptr<react::CallInvoker> callInvoker)
+      : callInvoker_(std::move(callInvoker)),
+        threadId_(std::this_thread::get_id()) {}
 
-  /**
-   * Invokes the given function on the JS thread.
-   *
-   * If called from the JS thread, then the callback func is invoked
-   * immediately.
-   *
-   * Otherwise, the callback is invoked on the JS thread, and this thread blocks
-   * until it completes.
-   */
-  void invokeBlocking(jsi::Runtime &rt, UniffiCallFunc &func) {
+  /** Returns false when the generation stopped before the callback started. */
+  bool invokeBlocking(jsi::Runtime &rt, UniffiCallFunc func) {
+    return invokeBlocking(&rt, std::move(func));
+  }
+  bool invokeBlocking(jsi::Runtime *rt, UniffiCallFunc func) {
     if (std::this_thread::get_id() == threadId_) {
-      func(rt);
-    } else {
-      std::promise<void> promise;
-      auto future = promise.get_future();
-      // The runtime argument was added to CallFunc in
-      // https://github.com/facebook/react-native/pull/43375
-      //
-      // This can be changed once that change is released.
-      // react::CallFunc wrapper = [&func, &promise](jsi::Runtime &rt) {
-      std::function<void()> wrapper = [&func, &promise, &rt]() {
-        func(rt);
-        promise.set_value();
-      };
-      callInvoker_->invokeAsync(std::move(wrapper));
-      future.wait();
+      {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        if (state_->stopped) {
+          return false;
+        }
+      }
+      func(*rt);
+      return true;
+    }
+    auto task = enqueue(rt, std::move(func));
+    if (!task) {
+      return false;
+    }
+    std::unique_lock<std::mutex> lock(state_->mutex);
+    task->completed.wait(lock, [&] {
+      return task->phase == Phase::Complete || task->phase == Phase::Cancelled;
+    });
+    if (!task->error.empty()) {
+      throw std::runtime_error(task->error);
+    }
+    return task->phase == Phase::Complete;
+  }
+
+  /** Returns false when the generation has already stopped. */
+  bool invokeNonBlocking(jsi::Runtime &rt, UniffiCallFunc func) {
+    return invokeNonBlocking(&rt, std::move(func));
+  }
+  bool invokeNonBlocking(jsi::Runtime *rt, UniffiCallFunc func) {
+    return enqueue(rt, std::move(func)) != nullptr;
+  }
+
+  /** Thread-safe cancellation. Does not destroy any queued JS captures. */
+  void stop() {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    state_->stopped = true;
+    for (const auto &task : state_->tasks) {
+      if (task->phase == Phase::Pending) {
+        task->phase = Phase::Cancelled;
+        task->completed.notify_all();
+      }
     }
   }
 
-  /**
-   * Invokes the given function on the JS thread, by adding to
-   * the event queue.
+  /** JS-thread cleanup, required before destroying this generation's runtime.
    */
-  void invokeNonBlocking(jsi::Runtime &rt, UniffiCallFunc func) {
-    // react::CallFunc wrapper = [func](jsi::Runtime &rt) {
-    std::function<void()> wrapper = [func, &rt]() { func(rt); };
-    callInvoker_->invokeAsync(std::move(wrapper));
+  void invalidate() {
+    if (std::this_thread::get_id() != threadId_) {
+      throw std::logic_error(
+          "UniffiCallInvoker::invalidate requires the JS thread");
+    }
+    stop();
+    std::vector<std::shared_ptr<Task>> cancelled;
+    {
+      std::lock_guard<std::mutex> lock(state_->mutex);
+      auto &tasks = state_->tasks;
+      for (auto iterator = tasks.begin(); iterator != tasks.end();) {
+        if ((*iterator)->phase == Phase::Cancelled) {
+          cancelled.push_back(*iterator);
+          iterator = tasks.erase(iterator);
+        } else {
+          ++iterator;
+        }
+      }
+    }
+    for (const auto &task : cancelled) {
+      task->func = nullptr;
+    }
   }
 };
 } // namespace uniffi_runtime

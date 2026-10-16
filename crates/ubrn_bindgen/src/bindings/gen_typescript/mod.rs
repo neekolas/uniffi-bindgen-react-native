@@ -4,6 +4,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/
  */
 pub(crate) mod api_module;
+#[cfg(test)]
+mod callback_input_ownership_tests;
 mod config;
 #[cfg(test)]
 mod ffi_import_tests;

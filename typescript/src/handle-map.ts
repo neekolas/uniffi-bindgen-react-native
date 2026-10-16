@@ -8,6 +8,25 @@ import { UniffiInternalError } from "./errors.ts";
 export type UniffiHandle = bigint;
 export const defaultUniffiHandle = BigInt("0");
 
+type HandleKind =
+  "callback" | "rust-future-continuation" | "foreign-future-drop";
+
+// Installed only by the React Native JSI runtime. The hooks retain their original
+// runtime owner; an existing map must never adopt a replacement runtime's hooks.
+interface NativeHandleAllocator {
+  allocate(kind: HandleKind): UniffiHandle;
+  release(handle: UniffiHandle): void;
+  owns(handle: UniffiHandle): boolean;
+}
+
+function nativeHandleAllocator(): NativeHandleAllocator | undefined {
+  return (
+    globalThis as typeof globalThis & {
+      __ubrnHandleAllocator?: NativeHandleAllocator;
+    }
+  ).__ubrnHandleAllocator;
+}
+
 export class UniffiHandleMap<T> {
   private map = new Map<UniffiHandle, T>();
   // Foreign handles must be odd values per uniffi 0.30.x:
@@ -15,42 +34,46 @@ export class UniffiHandleMap<T> {
   // "Foreign handles must always have the lowest bit set"
   // "0 is an invalid value."
   private currentHandle: UniffiHandle = BigInt(1);
+  private allocator: NativeHandleAllocator | null | undefined =
+    nativeHandleAllocator();
+
+  constructor(private readonly kind: HandleKind = "callback") {}
 
   insert(value: T): UniffiHandle {
-    const handle = this.currentHandle;
+    // Some generated modules create their maps before native registration. Bind
+    // lazily once in that case. null permanently selects the Node/Web allocator.
+    if (this.allocator === undefined) {
+      this.allocator = nativeHandleAllocator() ?? null;
+    }
+    const handle = this.allocator
+      ? this.allocator.allocate(this.kind)
+      : this.currentHandle;
+    if (
+      handle <= BigInt(0) ||
+      handle > BigInt("18446744073709551615") ||
+      handle % BigInt(2) !== BigInt(1)
+    ) {
+      throw new Error("Foreign handle must be an odd unsigned 64-bit value");
+    }
+    if (this.map.has(handle)) {
+      throw new Error("Native allocator returned a live foreign handle");
+    }
     this.map.set(handle, value);
-    this.currentHandle += BigInt(2); // stay odd
+    if (!this.allocator) this.currentHandle += BigInt(2); // stay odd
     return handle;
   }
 
   get(handle: UniffiHandle): T {
     const obj = this.map.get(handle);
-    if (obj === undefined) {
-      // Rust is holding a handle which is no longer in the handle map, either
-      // because this is a different handle map to the one it was inserted in,
-      // or that the handle has already been removed from the handlemap it was
-      // originally in.
-      //
-      // This is because of either:
-      //   a) the Typescript has changed state without resetting a callback
-      //      interface, i.e. a hot reload.
-      //   b) a bug in uniffi-bindgen-react-native.
-      //
-      // If this error is thrown when the app is in the wild, i.e. outside of a
-      // development, i.e. not a hot reload, then please file a bug with
-      // uniffi-bindgen-react-native.
-      //
-      // Otherwise, this error is not recoverable, and a cold reload is
-      // necessary.
-      //
-      // If the error is not intermittent, i.e. happening every reload, then
-      // you should probably consider changing the Rust library to not hold
-      // on to callback interfaces and foreign trait instances across reloads,
-      // e.g. creating app or page lifecycle API, or replacing rather than
-      // appending listeners.
+    if (
+      !this.map.has(handle) ||
+      (this.allocator && !this.allocator.owns(handle))
+    ) {
+      // A Rust-held handle may outlive its original JS runtime. Its replacement
+      // must reject the handle instead of resolving it in another runtime's map.
       throw new UniffiInternalError.UnexpectedStaleHandle();
     }
-    return obj;
+    return obj as T;
   }
 
   /**
@@ -62,23 +85,21 @@ export class UniffiHandleMap<T> {
    * same JS object reference, and removing either handle does not affect the other.
    */
   clone(handle: UniffiHandle): UniffiHandle {
-    const obj = this.map.get(handle);
-    if (obj === undefined) {
-      throw new UniffiInternalError.UnexpectedStaleHandle();
-    }
-    return this.insert(obj);
+    return this.insert(this.get(handle));
   }
 
   remove(handle: UniffiHandle): T | undefined {
     const obj = this.map.get(handle);
-    if (obj !== undefined) {
-      this.map.delete(handle);
+    if (this.map.delete(handle)) {
+      this.allocator?.release(handle);
     }
     return obj;
   }
 
   has(handle: UniffiHandle): boolean {
-    return this.map.has(handle);
+    return (
+      this.map.has(handle) && (!this.allocator || this.allocator.owns(handle))
+    );
   }
 
   get size(): number {

@@ -126,16 +126,22 @@ export async function uniffiRustCallAsync<F, S extends UniffiRustCallStatus, T>(
 type PromiseResolver<T> = (value: T) => void;
 const UNIFFI_RUST_FUTURE_RESOLVER_MAP = new UniffiHandleMap<
   PromiseResolver<number>
->();
+>("rust-future-continuation");
 
 // pollRust makes a new promise, stores the resolver in the resolver map,
 // then calls the pollFunc with the handle.
 async function pollRust(
   pollFunc: (handle: UniffiHandle) => void,
 ): Promise<number> {
-  return new Promise<number>((resolve) => {
+  return new Promise<number>((resolve, reject) => {
     const handle = UNIFFI_RUST_FUTURE_RESOLVER_MAP.insert(resolve);
-    pollFunc(handle);
+    try {
+      pollFunc(handle);
+    } catch (error) {
+      // The native side never took ownership when registration failed.
+      UNIFFI_RUST_FUTURE_RESOLVER_MAP.remove(handle);
+      reject(error);
+    }
   });
 }
 
