@@ -384,6 +384,8 @@ pub async fn use_shared_resource(options: SharedResourceOptions) -> Result<(), A
 // Example of an trait with async methods
 #[uniffi::export]
 #[async_trait::async_trait]
+// async_trait marks its already must-use boxed Future output as must_use.
+#[allow(clippy::double_must_use)]
 pub trait SayAfterTrait: Send + Sync {
     async fn say_after(&self, ms: u16, who: String) -> String;
 }
@@ -391,6 +393,8 @@ pub trait SayAfterTrait: Send + Sync {
 // Example of async trait defined in the UDL file
 #[async_trait::async_trait]
 #[uniffi::trait_interface]
+// async_trait marks its already must-use boxed Future output as must_use.
+#[allow(clippy::double_must_use)]
 pub trait SayAfterUdlTrait: Send + Sync {
     async fn say_after(&self, ms: u16, who: String) -> String;
 }
@@ -440,6 +444,8 @@ fn get_say_after_udl_traits() -> Vec<Arc<dyn SayAfterUdlTrait>> {
 // Async callback interface implemented in foreign code
 #[uniffi::export(with_foreign)]
 #[async_trait::async_trait]
+// async_trait marks its already must-use boxed Future output as must_use.
+#[allow(clippy::double_must_use)]
 pub trait AsyncParser: Send + Sync {
     // Simple async method
     async fn as_string(&self, delay_ms: i32, value: i32) -> String;
