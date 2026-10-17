@@ -15,6 +15,16 @@ use crate::{metadata, paths, run_cmd, run_cmd_quietly, typescript};
 ///
 /// Called from proc-macro-generated `#[test]` functions.
 pub fn run_test(crate_name: &str, test_script: &str, target_tmpdir: &str) {
+    run_test_with_features(crate_name, test_script, target_tmpdir, &[]);
+}
+
+/// Run a JSI fixture with explicitly selected Cargo features.
+pub fn run_test_with_features(
+    crate_name: &str,
+    test_script: &str,
+    target_tmpdir: &str,
+    features: &[&str],
+) {
     // Serialize with other flavors for this fixture (they share generated/).
     let _lock = crate::lock_fixture();
 
@@ -30,7 +40,7 @@ pub fn run_test(crate_name: &str, test_script: &str, target_tmpdir: &str) {
     std::fs::create_dir_all(&out_dir).expect("failed to create output dir");
 
     // Step 1: Build the fixture crate
-    crate::cargo_build(crate_name);
+    crate::cargo_build_with_features(crate_name, features);
 
     // Step 2: Generate bindings
     // All generated artifacts go under fixture's generated/jsi/ for easy inspection.
