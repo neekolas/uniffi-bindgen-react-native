@@ -1,7 +1,7 @@
 rust:
-  repo: https://github.com/jhugman/uniffi-starter.git
-  # A maintainer must land https://github.com/jhugman/uniffi-starter/pull/1
-  # as branch `jhugman/bump-uniffi-to-0.32` before this CI job can pass.
-  # That branch pins uniffi 0.32 (lock: 0.32.1).
-  branch: jhugman/bump-uniffi-to-0.32
+  repo: https://github.com/neekolas/uniffi-starter.git
+  # Pin the UniFFI 0.32 update proposed in jhugman/uniffi-starter#1.
+  # The upstream branch is unavailable; this revision pins its implementation
+  # in the PR author's fork (lock: 0.32.1).
+  rev: 9e15f8f0f4b6b96f1461b90d3f4a67658a348613
   manifestPath: rust/foobar/Cargo.toml

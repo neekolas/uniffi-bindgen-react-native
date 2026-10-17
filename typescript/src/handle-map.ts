@@ -9,7 +9,9 @@ export type UniffiHandle = bigint;
 export const defaultUniffiHandle = BigInt("0");
 
 type HandleKind =
-  "callback" | "rust-future-continuation" | "foreign-future-drop";
+  | "callback"
+  | "rust-future-continuation"
+  | "foreign-future-drop";
 
 // Installed only by the React Native JSI runtime. The hooks retain their original
 // runtime owner; an existing map must never adopt a replacement runtime's hooks.

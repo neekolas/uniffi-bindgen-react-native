@@ -119,8 +119,6 @@ namespace {{ ns }} {
         {%- if callback.has_rust_call_status_arg() %}
         *uniffi_call_status = {};
         {%- endif %}
-        bool entered = false;
-        bool dispatched = false;
         auto &handles = uniffi_runtime::HandleRegistry::instance();
         {%- if callback.is_drop_callback() %}
         handles.cancel({{ first_arg }});
@@ -151,6 +149,8 @@ namespace {{ ns }} {
         } catch (...) { /* C ABI callbacks cannot throw. */ }
         return;
         {%- else %}
+        bool entered = false;
+        bool dispatched = false;
         try {
             {%- if let Some(completion) = callback.async_completion(ci) %}
             completionState = std::make_shared<Completion>(rs_uniffiFutureCallback, rs_uniffiCallbackData, [] {

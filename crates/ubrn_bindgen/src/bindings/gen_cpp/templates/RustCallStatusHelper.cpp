@@ -2,7 +2,7 @@
 namespace {{ ns }} {
 using namespace facebook;
 using CallInvoker = uniffi_runtime::UniffiCallInvoker;
-static RustCallStatus callbackFailure() noexcept {
+[[maybe_unused]] static RustCallStatus callbackFailure() noexcept {
   // Empty RustBuffers are valid UniFFI strings. Avoid allocating a payload:
   // this failure may race the Rust receiver dropping its oneshot channel.
   return {UNIFFI_CALL_STATUS_PANIC, RustBuffer{}};

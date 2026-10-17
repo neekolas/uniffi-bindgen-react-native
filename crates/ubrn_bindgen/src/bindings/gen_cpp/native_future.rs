@@ -141,20 +141,24 @@ impl Decoder<'_> {
                 Ok(format!("{{ {read} free_buffer({value}); }}"))
             }
             FfiType::Handle => {
-                let id = self.reader(ty)?;
                 if let Type::Object {
                     module_path, name, ..
                 } = ty
                 {
                     let owner = component(self.ci, module_path)?;
+                    let object = owner
+                        .get_object_definition(name)
+                        .ok_or_else(|| anyhow!("missing native object {name}"))?;
                     let helper = if owner.crate_name() == self.ci.crate_name() {
                         name.clone()
                     } else {
                         format!("{}_{}", owner.crate_name(), name)
                     };
+                    self.objects
+                        .insert(helper.clone(), object.ffi_object_free().name().into());
                     Ok(format!("discard_object_{helper}({value});"))
                 } else {
-                    bail!("unsupported native handle result {ty:?} ({id})")
+                    bail!("unsupported native handle result {ty:?}")
                 }
             }
             _ => Ok(String::new()),
@@ -163,6 +167,9 @@ impl Decoder<'_> {
 }
 
 pub(super) fn generate(ci: &ComponentInterface) -> Result<String> {
+    if !ci.iter_callables().any(|callable| callable.is_async()) {
+        return Ok(String::new());
+    }
     let mut decoder = Decoder {
         ci,
         types: BTreeMap::new(),
@@ -176,7 +183,12 @@ pub(super) fn generate(ci: &ComponentInterface) -> Result<String> {
         let free = callable.ffi_rust_future_free(ci);
         writeln!(disposers, "static void dispose_{symbol}(uint64_t handle, bool completed) noexcept {{\n if (!completed) {{\n RustCallStatus status{{}};").unwrap();
         if let Some(ty) = callable.return_type() {
-            writeln!(disposers, "auto value = {complete}(handle, &status);\nif (status.code == UNIFFI_CALL_STATUS_OK) {{ {} }}", decoder.discard(ty, "value")?).unwrap();
+            let discard = decoder.discard(ty, "value")?;
+            if discard.is_empty() {
+                writeln!(disposers, "{complete}(handle, &status);\n").unwrap();
+            } else {
+                writeln!(disposers, "auto value = {complete}(handle, &status);\nif (status.code == UNIFFI_CALL_STATUS_OK) {{ {discard} }}").unwrap();
+            }
         } else {
             writeln!(disposers, "{complete}(handle, &status);").unwrap();
         }

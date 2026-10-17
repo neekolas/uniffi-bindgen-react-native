@@ -44,6 +44,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Install JavaScript test dependencies
+        run: cargo xtask bootstrap yarn
+
       - name: Run tests
         run: cargo test --verbose --workspace --exclude 'uniffi-example-*' --exclude 'uniffi-fixture-*' --exclude 'javascript-runtime-tests'
 
