@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use super::extensions::CppComponentInterfaceExt;
+use super::{extensions::CppComponentInterfaceExt, native_object::NativeObjectHooks};
 use anyhow::{anyhow, bail, Result};
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -166,7 +166,7 @@ impl Decoder<'_> {
     }
 }
 
-pub(super) fn generate(ci: &ComponentInterface) -> Result<String> {
+pub(super) fn generate(ci: &ComponentInterface, hooks: &NativeObjectHooks) -> Result<String> {
     if !ci.iter_callables().any(|callable| callable.is_async()) {
         return Ok(String::new());
     }
@@ -216,7 +216,15 @@ struct Reader {
 static void free_buffer(RustBuffer buffer) { if (buffer.data) Bridging<RustBuffer>::rustbuffer_free(buffer); }
 "#);
     for (helper, symbol) in &decoder.objects {
-        writeln!(output, "extern \"C\" void {symbol}(uint64_t, RustCallStatus *);\nstatic void discard_object_{helper}(uint64_t pointer) {{\n // UBRN_DISCARD_OBJECT {helper}\n RustCallStatus status{{}};\n {symbol}(pointer, &status);\n free_buffer(status.error_buf);\n}}").unwrap();
+        if let Some(discard) = hooks.discard.get(symbol) {
+            writeln!(
+                output,
+                "static void discard_object_{helper}(uint64_t pointer) {{ {discard}(pointer); }}"
+            )
+            .unwrap();
+        } else {
+            writeln!(output, "extern \"C\" void {symbol}(uint64_t, RustCallStatus *);\nstatic void discard_object_{helper}(uint64_t pointer) {{\n RustCallStatus status{{}};\n {symbol}(pointer, &status);\n free_buffer(status.error_buf);\n}}").unwrap();
+        }
     }
     for id in 0..decoder.bodies.len() {
         writeln!(output, "static void read_{id}(Reader &r);").unwrap();

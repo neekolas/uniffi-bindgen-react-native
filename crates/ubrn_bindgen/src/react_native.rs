@@ -25,6 +25,11 @@ pub(crate) fn generate_cpp(
         let hpp = gen_cpp::generate_hpp(&component.ci, &component.config, &module)?;
         let hpp_path = out_dir.join(module.hpp_filename());
         ubrn_common::write_file(hpp_path, hpp)?;
+
+        if component.config.emit_ffi_header {
+            let ffi = gen_cpp::generate_ffi_hpp(&component.ci, &module)?;
+            ubrn_common::write_file(out_dir.join(module.ffi_hpp_filename()), ffi)?;
+        }
     }
     if try_format_code {
         gen_cpp::format_directory(out_dir)?;

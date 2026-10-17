@@ -4,6 +4,7 @@
 #include <cassert>
 #include <deque>
 #include <iostream>
+#include <set>
 #include <hermes/hermes.h>
 #ifndef GENERATED_WRAPPER
 #error Set GENERATED_WRAPPER to generated arc_futures.cpp
@@ -116,11 +117,73 @@ static void reentrantRetirementDoesNotFreeRunningPoll() {
   assert(live() == 0);
   queue->drain(*rt);
 }
+#ifdef NATIVE_OBJECT_POLICY
+namespace native_policy {
+static std::set<uint64_t> pending;
+static uint64_t original = 0, retained = 0;
+static unsigned completions = 0, frees = 0, discards = 0;
+void started(Invoker, uint64_t handle) { assert(pending.insert(handle).second); }
+void completed(Invoker, uint64_t handle, uint64_t pointer, int8_t status) {
+  if (!pending.erase(handle) || status != 0) return;
+  ++completions;
+  RustCallStatus callStatus{};
+  retained = uniffi_arc_futures_fn_clone_simpleobject(pointer, &callStatus);
+  original = pointer;
+  assert(callStatus.code == 0 && retained != 0);
+}
+void freed(Invoker, uint64_t handle) { ++frees; pending.erase(handle); }
+void discard(uint64_t pointer) {
+  ++discards;
+  RustCallStatus status{};
+  uniffi_arc_futures_fn_free_simpleobject(pointer, &status);
+  assert(status.code == 0);
+}
+}
+static void policyRetainsBeforeJsStatusAndDiscardsUnreturnedResults() {
+  auto rt = facebook::hermes::makeHermesRuntime();
+  auto queue = std::make_shared<Queue>();
+  setup(*rt, queue);
+  eval(*rt, R"JS(
+    var handle = m.ubrn_uniffi_arc_futures_fn_func_make_object();
+    m.ubrn_ffi_arc_futures_rust_future_poll_u64(handle, continuation, token());
+  )JS");
+  assert(native_policy::pending.size() == 1 && live() == 1);
+  eval(*rt, R"JS(
+    var failed = false;
+    try { m.ubrn_ffi_arc_futures_rust_future_complete_u64(handle, undefined); }
+    catch (e) { failed = true; }
+    if (!failed) throw new Error('status lifting must fail before JS adoption');
+    m.ubrn_ffi_arc_futures_rust_future_free_u64(handle);
+  )JS");
+  assert(native_policy::completions == 1 && native_policy::frees == 1);
+  assert(native_policy::pending.empty() && native_policy::retained != 0);
+  RustCallStatus status{};
+  uniffi_arc_futures_fn_free_simpleobject(native_policy::original, &status);
+  assert(live() == 1); // The policy retained the object before JavaScript threw.
+  uniffi_arc_futures_fn_free_simpleobject(native_policy::retained, &status);
+  assert(live() == 0);
+  eval(*rt, R"JS(
+    var lateFree = m.ubrn_ffi_arc_futures_rust_future_free_u64;
+    handle = m.ubrn_uniffi_arc_futures_fn_func_make_object();
+    m.ubrn_ffi_arc_futures_rust_future_poll_u64(handle, continuation, token());
+  )JS");
+  assert(live() == 1);
+  NativeArcFutures::unregisterModule(*rt);
+  assert(native_policy::discards == 1 && live() == 0);
+  eval(*rt, "lateFree(handle)");
+  assert(native_policy::pending.empty());
+  queue->drain(*rt);
+}
+#endif
 int main() {
+#ifdef NATIVE_OBJECT_POLICY
+  policyRetainsBeforeJsStatusAndDiscardsUnreturnedResults();
+#else
   readyResultIsDiscarded("make_object", "u64", 1);
   readyResultIsDiscarded("make_nested_objects", "rust_buffer", 2);
   readyResultIsDiscarded("throw_object", "void", 1);
   completedResultRemainsOwnedByCaller();
   reentrantRetirementDoesNotFreeRunningPoll();
+#endif
   std::cout << "real Rust native future ownership tests passed\n";
 }

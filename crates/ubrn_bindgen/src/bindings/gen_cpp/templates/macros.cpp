@@ -21,6 +21,9 @@
 {%- call cpp_fn_from_js_decl(func) %} {
     {%- if func.is_future_free() %}
     auto handle = uniffi_jsi::Bridging<uint64_t>::fromJs(rt, callInvoker, args[0]);
+    {%- if let Some(hook) = native_object.freed.get(func.name()) %}
+    {{ hook }}(callInvoker, handle);
+    {%- endif %}
     generation->retireFuture(handle);
     return jsi::Value::undefined();
     {%- else %}
@@ -101,11 +104,16 @@ jsi::Value {{ module_name }}::{% call cpp_func_name(func) %}(jsi::Runtime& rt, c
         {%- if let Some(free) = func.native_future_free(ci) %}
         generation->rustFutures.emplace(value, std::make_shared<uniffi_runtime::NativeFuture>(
             [value](bool completed) { {{ ci.cpp_namespace() }}::native_discard::dispose_{{ func.name() }}(value, completed); }));
-        // UBRN_NATIVE_FUTURE {{ func.name() }}
+        {%- if let Some(hook) = native_object.started.get(func.name()) %}
+        {{ hook }}(callInvoker, value);
+        {%- endif %}
         {%- endif %}
 
         {%- if func.is_future_complete() %}
         futureLease.completed();
+        {%- if let Some(hook) = native_object.completed.get(func.name()) %}
+        {{ hook }}(callInvoker, handle, value, status.code);
+        {%- endif %}
         {%- endif %}
 
         {#- Now copy the call status into JS. #}

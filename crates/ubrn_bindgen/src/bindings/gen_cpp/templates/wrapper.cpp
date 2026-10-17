@@ -6,6 +6,9 @@
 #include "{{ module.hpp_filename() }}"
 
 #include "UniffiJsiTypes.h"
+{%- for include in config.includes %}
+#include "{{ include }}"
+{%- endfor %}
 #include <stdexcept>
 #include <map>
 #include <utility>
@@ -15,20 +18,7 @@
 namespace react = facebook::react;
 namespace jsi = facebook::jsi;
 
-// Calling into Rust.
-extern "C" {
-    {%- for definition in ci.ffi_definitions() %}
-    {%- match definition %}
-    {%- when FfiDefinition::Struct(ffi_struct) %}
-    {%- call cpp::callback_struct_decl(ffi_struct) %}
-    {%- when FfiDefinition::CallbackFunction(callback) %}
-    {%- call cpp::callback_fn_decl(callback) %}
-    {%- when FfiDefinition::Function with(func) %}
-    {% call cpp::rust_fn_decl(func) %}
-    {%- else %}
-    {%- endmatch %}
-    {%- endfor %}
-}
+{% include "ffi_declarations.hpp" %}
 
 {% include "BridgingHelper.cpp" %}
 {% include "RustBufferHelper.cpp" %}

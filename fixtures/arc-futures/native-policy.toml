@@ -1,0 +1,13 @@
+[bindings.typescript]
+strictTypeChecking = true
+
+[bindings.cpp]
+includes = ["native-object-policy.h"]
+emitFfiHeader = true
+
+[bindings.cpp.nativeObject]
+object = "SimpleObject"
+futureStarted = "native_policy::started"
+futureCompleted = "native_policy::completed"
+futureFreed = "native_policy::freed"
+discard = "native_policy::discard"

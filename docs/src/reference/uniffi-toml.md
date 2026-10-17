@@ -207,3 +207,28 @@ package_name = "com.example.myapp.mycrate"
 If you are using proguard it is important to add the appropriate classes to proguard-rules.pro.
 Otherwise, application in the release version may not work as it should.
 ```
+
+## Native object policy (JSI)
+
+`[bindings.cpp]` can set `includes` (quoted C++ header paths) and
+`emitFfiHeader = true` to emit `<namespace>_ffi.hpp` from the same native ABI
+metadata used by the module. These options apply only to JSI generation.
+
+The optional `[bindings.cpp.nativeObject]` table names one `object` and four
+C++ functions: `futureStarted`, `futureCompleted`, `futureFreed`, and `discard`.
+The generator selects direct object results from async constructors, methods,
+and functions. Unknown objects, missing producers, and synchronous producers
+fail generation. C++ compilation checks the hook signatures:
+
+- `futureStarted(invoker, future)` runs before exposing the native future to JS.
+- `futureCompleted(invoker, future, pointer, status)` runs before JS status or
+  result conversion. It receives an `int8_t` status; handles and pointers are
+  `uint64_t`.
+- `futureFreed(invoker, future)` runs before retiring a future.
+- `discard(pointer)` replaces the default object free when a result is discarded.
+
+`invoker` is a `shared_ptr<uniffi_runtime::UniffiCallInvoker>`. Completion and free
+entry points are shared by futures with the same ABI result, so hooks must ignore
+futures not registered by `futureStarted`. The caller owns retention and teardown;
+this option does not install an object owner or change JavaScript finalizers.
+`fixtures/arc-futures/native-policy.toml` is an executable example.

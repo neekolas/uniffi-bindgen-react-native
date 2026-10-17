@@ -76,3 +76,9 @@ native drop creates no error RustBuffer. It also sends an unavailable-runtime
 failure through the real Rust callback ABI and checks the typed error returned
 by Rust. The generated TypeScript callback-input test separately checks input
 lifting and cleanup before user code, on lift failure, and before async waiting.
+
+To check the optional native-object policy, generate a second Arc wrapper with
+`fixtures/arc-futures/native-policy.toml` and pass its `.cpp` as the script's
+optional sixth argument. This compiles the emitted ABI header as a separate
+consumer, retains an actual Rust object before a JS status conversion throws,
+and routes an unreturned READY object through the configured discard hook.
