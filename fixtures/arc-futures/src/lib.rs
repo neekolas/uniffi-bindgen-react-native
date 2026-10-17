@@ -162,6 +162,8 @@ pub trait AsyncCallback {
 #[cfg(not(target_arch = "wasm32"))]
 #[uniffi::export(with_foreign)]
 #[async_trait::async_trait]
+// async_trait marks its already must-use boxed Future output as must_use.
+#[allow(clippy::double_must_use)]
 pub trait AsyncCallback: Send + Sync {
     async fn on_update(&self, previous: String, current: String);
 }
@@ -190,6 +192,8 @@ async fn make_object_with_async_callback(callback: Arc<dyn AsyncCallback>) -> Ar
 #[cfg(not(target_arch = "wasm32"))]
 #[uniffi::export(with_foreign)]
 #[async_trait::async_trait]
+// async_trait marks its already must-use boxed Future output as must_use.
+#[allow(clippy::double_must_use)]
 pub trait RustCallback: Sync + Send {
     async fn on_update(&self, previous: String, current: String) -> String;
 }

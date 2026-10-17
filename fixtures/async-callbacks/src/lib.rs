@@ -15,6 +15,8 @@ use ubrn_testing::timer::{TimerFuture, TimerService};
 // Async callback interface implemented in foreign code
 #[uniffi::export(with_foreign)]
 #[async_trait::async_trait]
+// async_trait marks its already must-use boxed Future output as must_use.
+#[allow(clippy::double_must_use)]
 pub trait AsyncParser: Send + Sync {
     // Simple async method
     async fn as_string(&self, delay_ms: i32, value: i32) -> String;

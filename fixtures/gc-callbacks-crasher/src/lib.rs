@@ -11,6 +11,8 @@ use std::sync::Arc;
 
 #[uniffi::export(callback_interface)]
 #[async_trait::async_trait]
+// async_trait marks its already must-use boxed Future output as must_use.
+#[allow(clippy::double_must_use)]
 pub trait AsyncDelegate: Sync + Send {
     async fn method(&self, user_id: String) -> String;
 }
