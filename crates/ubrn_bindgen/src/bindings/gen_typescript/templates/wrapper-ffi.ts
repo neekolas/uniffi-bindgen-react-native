@@ -99,7 +99,7 @@ const isRustFutureContinuationCallbackTypeCompatible: UniffiStructuralEquality<
 {%- if module.has_foreign_future %}
 const isUniffiForeignFutureTypeCompatible: UniffiStructuralEquality<
   RuntimeUniffiForeignFuture,
-  UniffiForeignFuture
+  UniffiForeignFutureDroppedCallbackStruct
 > = true;
 {%- endif %}
 {%- endif %}

@@ -70,6 +70,8 @@ pub async fn use_calculator_from_thread(calc: Box<dyn Calculator>, a: u32, b: u3
 
 #[uniffi::export(with_foreign)]
 #[async_trait::async_trait]
+// async_trait marks its already must-use boxed Future output as must_use.
+#[allow(clippy::double_must_use)]
 pub trait AsyncFetcher: Send + Sync {
     async fn fetch(&self, input: String) -> String;
 }

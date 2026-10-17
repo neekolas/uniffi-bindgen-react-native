@@ -39,6 +39,27 @@ pub(super) impl ComponentInterface {
 
 #[ext(name = CppFfiFunctionExt)]
 pub(super) impl FfiFunction {
+    fn native_future_free(&self, ci: &ComponentInterface) -> Option<String> {
+        if !self.is_async() {
+            return None;
+        }
+        ci.iter_callables()
+            .find(|callable| callable.ffi_func().name() == self.name())
+            .map(|callable| callable.ffi_rust_future_free(ci))
+    }
+
+    fn is_future_operation(&self) -> bool {
+        self.name().contains("_rust_future_")
+    }
+
+    fn is_future_complete(&self) -> bool {
+        self.name().contains("_rust_future_complete_")
+    }
+
+    fn is_future_free(&self) -> bool {
+        self.name().contains("_rust_future_free_")
+    }
+
     fn is_callback_init(&self) -> bool {
         self.name().contains("_callback_vtable_")
     }
@@ -82,6 +103,10 @@ pub(super) impl FfiType {
         }
     }
 
+    fn is_rust_buffer(&self) -> bool {
+        matches!(self, Self::RustBuffer(_))
+    }
+
     fn is_foreign_bytes(&self) -> bool {
         matches!(self, Self::ForeignBytes)
     }
@@ -110,6 +135,64 @@ pub(super) impl FfiCallbackFunction {
 
     fn is_rust_calling_js(&self) -> bool {
         !self.is_future_callback() || self.is_continuation_callback()
+    }
+
+    fn is_future_complete(&self) -> bool {
+        false
+    }
+
+    fn native_future_free(&self, _ci: &ComponentInterface) -> Option<String> {
+        None
+    }
+
+    fn handle_kind(&self) -> &'static str {
+        match self.name() {
+            "RustFutureContinuationCallback" => "rust-future-continuation",
+            "ForeignFutureDroppedCallback" | "ForeignFutureFree" => "foreign-future-drop",
+            _ => "callback",
+        }
+    }
+
+    fn is_clone_callback(&self) -> bool {
+        self.name() == "CallbackInterfaceClone"
+    }
+
+    fn is_drop_callback(&self) -> bool {
+        self.is_free_callback() || self.name() == "ForeignFutureDroppedCallback"
+    }
+
+    fn async_completion(&self, ci: &ComponentInterface) -> Option<FfiCallbackFunction> {
+        self.arguments().iter().find_map(|arg| {
+            if let FfiType::Callback(name) = arg.type_() {
+                ci.ffi_definitions().find_map(|def| match def {
+                    FfiDefinition::CallbackFunction(cb)
+                        if cb.name() == name && name.starts_with("ForeignFutureComplete") =>
+                    {
+                        Some(cb)
+                    }
+                    _ => None,
+                })
+            } else {
+                None
+            }
+        })
+    }
+
+    fn completion_result(&self) -> FfiType {
+        self.arguments()[1].type_()
+    }
+
+    fn completion_returns_buffer(&self, ci: &ComponentInterface) -> bool {
+        let FfiType::Struct(name) = self.completion_result() else {
+            return false;
+        };
+        ci.iter_ffi_structs()
+            .find(|st| st.name() == name)
+            .is_some_and(|st| {
+                st.fields()
+                    .iter()
+                    .any(|field| field.name() == "return_value" && field.type_().is_rust_buffer())
+            })
     }
 
     fn arg_return_cpp_name(&self) -> String {

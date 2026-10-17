@@ -2,7 +2,7 @@ name: Compat (PR)
 
 on:
   pull_request:
-    branches: ["main"]
+    branches: ["main", "uniffi-0.32/xmtp-embedding"]
 
 jobs:
   ios:

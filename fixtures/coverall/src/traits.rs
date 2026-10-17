@@ -4,7 +4,9 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/
  */
 
-use super::{ComplexError, CoverallError, Coveralls};
+#[cfg(not(feature = "jsi-fixture"))]
+use super::Coveralls;
+use super::{ComplexError, CoverallError};
 use std::sync::{Arc, Mutex};
 
 // namespace functions.
@@ -45,6 +47,7 @@ pub trait Getters: Send + Sync {
     fn get_option(&self, v: String, arg2: bool) -> Result<Option<String>, ComplexError>;
     fn get_list(&self, v: Vec<i32>, arg2: bool) -> Vec<i32>;
     fn get_nothing(&self, v: String);
+    #[cfg(not(feature = "jsi-fixture"))]
     fn round_trip_object(&self, coveralls: Arc<Coveralls>) -> Arc<Coveralls>;
 }
 
@@ -52,6 +55,7 @@ pub fn test_round_trip_through_rust(getters: Arc<dyn Getters>) -> Arc<dyn Getter
     getters
 }
 
+#[cfg(not(feature = "jsi-fixture"))]
 pub fn test_round_trip_through_foreign(getters: Arc<dyn Getters>) {
     let coveralls = getters.round_trip_object(Arc::new(Coveralls::new("round-trip".to_owned())));
     assert_eq!(coveralls.get_name(), "round-trip");
@@ -105,6 +109,7 @@ impl Getters for RustGetters {
 
     fn get_nothing(&self, _v: String) {}
 
+    #[cfg(not(feature = "jsi-fixture"))]
     fn round_trip_object(&self, coveralls: Arc<Coveralls>) -> Arc<Coveralls> {
         coveralls
     }

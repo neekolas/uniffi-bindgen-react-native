@@ -21,10 +21,32 @@ const {{ trait_impl }}: { vtable: any; register: () => void; } = {
             ()
             {%- endif %}
             : {% call cb::return_type(meth) %} => {
+                {%- if module.flavor.is_jsi() && field.has_rust_buffer_args() %}
+                // Decode every input before calling user code. Release all owned
+                // buffers even when the handle lookup or an earlier lift throws.
+                const [jsCallback{%- for arg in meth.arguments %}, uniffiArg{{ loop.index0 }}{%- endfor %}] = (() => {
+                    try {
+                        return [{{ ffi_converter_name }}.lift(uniffiHandle)
+                            {%- for arg in meth.arguments %}, {{ arg.ffi_converter }}.lift({{ arg.name }}){%- endfor %}
+                        ] as const;
+                    } finally {
+                        {%- for arg in field.ffi_closure_args %}
+                        {%- if arg.is_rust_buffer %}
+                        nativeModule().rustbuffer_free({{ arg.name }});
+                        {%- endif %}
+                        {%- endfor %}
+                    }
+                })();
+                {%- else %}
                 const jsCallback = {{ ffi_converter_name }}.lift(uniffiHandle);
+                {%- endif %}
                 return {% if meth.is_ffi_async() %}await {% endif %}jsCallback.{{ meth.name }}(
                     {%- for arg in meth.arguments %}
+                    {%- if module.flavor.is_jsi() && field.has_rust_buffer_args() %}
+                    uniffiArg{{ loop.index0 }}{% if !loop.last %}, {% endif %}
+                    {%- else %}
                     {{ arg.ffi_converter }}.lift({{ arg.name }}){% if !loop.last %}, {% endif %}
+                    {%- endif %}
                     {%- endfor %}
                     {%- if meth.is_ffi_async() -%}
                     {%-   if !meth.arguments.is_empty() %}, {% endif -%}

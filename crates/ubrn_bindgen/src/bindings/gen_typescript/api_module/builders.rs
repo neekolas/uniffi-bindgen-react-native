@@ -850,6 +850,7 @@ fn build_closure_args(
             .map(|a| TsFfiArg {
                 name: arg_name(&a.name),
                 ffi_type: ffi_type_to_ts_name(&a.ty),
+                is_rust_buffer: matches!(a.ty, general::FfiType::RustBuffer(_)),
             })
             .collect();
         (args, ffi_fn.has_rust_call_status_arg)
@@ -857,10 +858,13 @@ fn build_closure_args(
         let mut args = vec![TsFfiArg {
             name: "uniffiHandle".into(),
             ffi_type: "bigint".into(),
+            is_rust_buffer: false,
         }];
         args.extend(callable.arguments.iter().map(|a| TsFfiArg {
             name: arg_name(&a.name),
             ffi_type: ffi_type_to_ts_name(&a.ty.ffi_type),
+            is_rust_buffer: matches!(a.ty.ffi_type, general::FfiType::RustBuffer(_))
+                && !a.is_borrowed_bytes(),
         }));
         (args, false)
     }

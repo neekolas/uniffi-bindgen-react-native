@@ -30,6 +30,10 @@ impl ModuleMetadata {
         format!("{}.hpp", self.namespace)
     }
 
+    pub fn ffi_hpp_filename(&self) -> String {
+        format!("{}_ffi.hpp", self.namespace)
+    }
+
     #[cfg(feature = "wasm")]
     pub fn rs_filename(&self) -> String {
         format!("{}.rs", self.rs_module())

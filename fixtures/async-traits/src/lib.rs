@@ -15,6 +15,8 @@ use ubrn_testing::timer::{TimerFuture, TimerService};
 #[uniffi::export]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+// async_trait marks its already must-use boxed Future output as must_use.
+#[allow(clippy::double_must_use)]
 pub trait SayAfterTrait: Send + Sync {
     async fn say_after(&self, ms: u16, who: String) -> String;
 }

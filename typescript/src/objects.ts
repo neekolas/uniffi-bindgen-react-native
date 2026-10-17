@@ -113,6 +113,9 @@ export class FfiConverterObjectWithCallbacks<T> extends FfiConverterObject<T> {
   lift(value: UniffiHandle): T {
     if (this.handleMap.has(value)) {
       return this.handleMap.get(value);
+    } else if (value % BigInt(2) !== BigInt(0)) {
+      // An unknown foreign handle must never be treated as a Rust Arc pointer.
+      return this.handleMap.get(value);
     } else {
       return super.lift(value);
     }

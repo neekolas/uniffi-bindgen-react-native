@@ -17,7 +17,7 @@ template <> struct Bridging<{{ struct_name }}> {
     auto jsObject = jsValue.getObject(rt);
 
     // Create the vtable struct
-    {{ struct_name }} rsObject;
+    {{ struct_name }} rsObject{};
 
     // Create the vtable from the js callbacks.
     {%- for field in ffi_struct.fields() %}

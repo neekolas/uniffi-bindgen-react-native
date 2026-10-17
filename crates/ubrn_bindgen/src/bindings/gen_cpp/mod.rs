@@ -3,15 +3,19 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/
  */
+mod callback_validation;
 mod config;
 mod extensions;
 mod filters;
+mod native_future;
+mod native_object;
 mod util;
 
 use std::borrow::Borrow;
 
 use anyhow::Result;
 use askama::Template;
+use native_object::NativeObjectHooks;
 use ubrn_common::CrateMetadata;
 use uniffi_bindgen::interface::{FfiDefinition, FfiType};
 use uniffi_bindgen::ComponentInterface;
@@ -33,6 +37,7 @@ pub(crate) fn generate_hpp(
     config: &Config,
     module: &ModuleMetadata,
 ) -> Result<String> {
+    callback_validation::validate_callback_discard(ci)?;
     Ok(HppWrapper::new(ci, config, module).render()?)
 }
 
@@ -41,7 +46,21 @@ pub(crate) fn generate_cpp(
     config: &Config,
     module: &ModuleMetadata,
 ) -> Result<String> {
-    Ok(CppWrapper::new(ci, config, module).render()?)
+    callback_validation::validate_callback_discard(ci)?;
+    let native_object = NativeObjectHooks::resolve(ci, config)?;
+    let disposal = native_future::generate(ci, &native_object)?;
+    Ok(CppWrapper::new(ci, config, module, disposal, native_object).render()?)
+}
+
+pub(crate) fn generate_ffi_hpp(ci: &ComponentInterface, module: &ModuleMetadata) -> Result<String> {
+    Ok(FfiHeader { ci, module }.render()?)
+}
+
+#[derive(Template)]
+#[template(syntax = "cpp", escape = "none", path = "ffi.hpp")]
+struct FfiHeader<'a> {
+    ci: &'a ComponentInterface,
+    module: &'a ModuleMetadata,
 }
 
 #[derive(Template)]
@@ -62,6 +81,8 @@ impl<'a> HppWrapper<'a> {
 #[derive(Template)]
 #[template(syntax = "cpp", escape = "none", path = "wrapper.cpp")]
 struct CppWrapper<'a> {
+    native_future_disposal: String,
+    native_object: NativeObjectHooks,
     ci: &'a ComponentInterface,
     #[allow(unused)]
     config: &'a Config,
@@ -69,8 +90,20 @@ struct CppWrapper<'a> {
 }
 
 impl<'a> CppWrapper<'a> {
-    fn new(ci: &'a ComponentInterface, config: &'a Config, module: &'a ModuleMetadata) -> Self {
-        Self { ci, config, module }
+    fn new(
+        ci: &'a ComponentInterface,
+        config: &'a Config,
+        module: &'a ModuleMetadata,
+        native_future_disposal: String,
+        native_object: NativeObjectHooks,
+    ) -> Self {
+        Self {
+            ci,
+            config,
+            module,
+            native_future_disposal,
+            native_object,
+        }
     }
 }
 

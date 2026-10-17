@@ -281,6 +281,12 @@ pub(crate) struct TsVtableField {
     pub has_rust_call_status_arg: bool,
 }
 
+impl TsVtableField {
+    pub fn has_rust_buffer_args(&self) -> bool {
+        self.ffi_closure_args.iter().any(|arg| arg.is_rust_buffer)
+    }
+}
+
 pub(crate) struct TsForeignFutureResult {
     pub struct_name: String,
     pub return_ffi_default_value: String,
@@ -289,6 +295,8 @@ pub(crate) struct TsForeignFutureResult {
 pub(crate) struct TsFfiArg {
     pub name: String,
     pub ffi_type: String,
+    /// Only owned RustBuffers need release; ForeignBytes are borrowed.
+    pub is_rust_buffer: bool,
 }
 
 // ---------------------------------------------------------------------------

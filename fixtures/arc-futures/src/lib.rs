@@ -10,6 +10,7 @@ extern crate uniffi_runtime_wasm as _;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -25,10 +26,23 @@ type EventHandlerFn = dyn Fn(String, String) -> EventHandlerFut + Send + Sync;
 #[cfg(target_arch = "wasm32")]
 type EventHandlerFn = dyn Fn(String, String) -> EventHandlerFut;
 
+static LIVE_OBJECTS: AtomicU32 = AtomicU32::new(0);
+
+#[uniffi::export]
+fn get_live_objects() -> u32 {
+    LIVE_OBJECTS.load(Ordering::SeqCst)
+}
+
 #[derive(uniffi::Object)]
 pub struct SimpleObject {
     inner: Mutex<String>,
     callbacks: Vec<Box<EventHandlerFn>>,
+}
+
+impl Drop for SimpleObject {
+    fn drop(&mut self) {
+        LIVE_OBJECTS.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl fmt::Debug for SimpleObject {
@@ -46,6 +60,7 @@ impl fmt::Display for SimpleObject {
 impl SimpleObject {
     #[cfg_attr(target_arch = "wasm32", allow(clippy::arc_with_non_send_sync))]
     fn new_with_callback(cb: Box<EventHandlerFn>) -> Arc<Self> {
+        LIVE_OBJECTS.fetch_add(1, Ordering::SeqCst);
         Arc::new(SimpleObject {
             inner: Mutex::new("key".to_string()),
             callbacks: vec![cb],
@@ -85,6 +100,21 @@ async fn make_object() -> Arc<SimpleObject> {
     #[cfg(target_arch = "wasm32")]
     console_error_panic_hook::set_once();
     SimpleObject::new_with_callback(from_static())
+}
+
+// An async RustBuffer result can own object handles below record, sequence,
+// and optional layers. The native lifetime harness checks these are released
+// when a READY result is discarded before JavaScript lifts it.
+#[derive(uniffi::Record)]
+pub struct NestedObjects {
+    pub values: Vec<Option<Arc<SimpleObject>>>,
+}
+
+#[uniffi::export]
+async fn make_nested_objects() -> NestedObjects {
+    NestedObjects {
+        values: vec![Some(make_object().await), None, Some(make_object().await)],
+    }
 }
 
 #[uniffi::export]
@@ -132,6 +162,8 @@ pub trait AsyncCallback {
 #[cfg(not(target_arch = "wasm32"))]
 #[uniffi::export(with_foreign)]
 #[async_trait::async_trait]
+// async_trait marks its already must-use boxed Future output as must_use.
+#[allow(clippy::double_must_use)]
 pub trait AsyncCallback: Send + Sync {
     async fn on_update(&self, previous: String, current: String);
 }
@@ -160,6 +192,8 @@ async fn make_object_with_async_callback(callback: Arc<dyn AsyncCallback>) -> Ar
 #[cfg(not(target_arch = "wasm32"))]
 #[uniffi::export(with_foreign)]
 #[async_trait::async_trait]
+// async_trait marks its already must-use boxed Future output as must_use.
+#[allow(clippy::double_must_use)]
 pub trait RustCallback: Sync + Send {
     async fn on_update(&self, previous: String, current: String) -> String;
 }

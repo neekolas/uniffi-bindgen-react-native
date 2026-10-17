@@ -142,13 +142,16 @@ pub(crate) fn run_cmd_quietly(cmd: &mut Command) {
 
 /// `cargo build -p <crate_name>`
 pub(crate) fn cargo_build(crate_name: &str) {
-    run_cmd_quietly(
-        Command::new("cargo")
-            .arg("build")
-            .arg("-p")
-            .arg(crate_name)
-            .arg("--lib"),
-    );
+    cargo_build_with_features(crate_name, &[]);
+}
+
+pub(crate) fn cargo_build_with_features(crate_name: &str, features: &[&str]) {
+    let mut command = Command::new("cargo");
+    command.arg("build").arg("-p").arg(crate_name).arg("--lib");
+    if !features.is_empty() {
+        command.arg("--features").arg(features.join(","));
+    }
+    run_cmd_quietly(&mut command);
 }
 
 /// Write a minimal tsconfig.json into the fixture directory so that tsx

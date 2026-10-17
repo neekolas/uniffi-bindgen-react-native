@@ -21,7 +21,9 @@ type PromiseHelper = {
     settled: boolean;
   };
 };
-const UNIFFI_FOREIGN_FUTURE_HANDLE_MAP = new UniffiHandleMap<PromiseHelper>();
+const UNIFFI_FOREIGN_FUTURE_HANDLE_MAP = new UniffiHandleMap<PromiseHelper>(
+  "foreign-future-drop",
+);
 
 // Some degenerate functions used for default arguments.
 const notExpectedError = (err: any) => false;

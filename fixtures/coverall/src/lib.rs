@@ -14,9 +14,11 @@ use std::sync::{Arc, Mutex, RwLock};
 use once_cell::sync::Lazy;
 
 mod traits;
+#[cfg(not(feature = "jsi-fixture"))]
+pub use traits::test_round_trip_through_foreign;
 pub use traits::{
     ancestor_names, get_string_util_traits, get_traits, make_rust_getters, test_getters,
-    test_round_trip_through_foreign, test_round_trip_through_rust, Getters, NodeTrait, StringUtil,
+    test_round_trip_through_rust, Getters, NodeTrait, StringUtil,
 };
 
 static NUM_ALIVE: Lazy<RwLock<u64>> = Lazy::new(|| RwLock::new(0));
@@ -604,4 +606,7 @@ impl ISecond {
 
 pub struct EmptyStruct;
 
+#[cfg(not(feature = "jsi-fixture"))]
 uniffi::include_scaffolding!("coverall");
+#[cfg(feature = "jsi-fixture")]
+uniffi::include_scaffolding!("coverall_jsi");

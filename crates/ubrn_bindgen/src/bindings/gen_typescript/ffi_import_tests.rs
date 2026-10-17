@@ -216,6 +216,7 @@ fn jsi_ffi_imports_what_it_uses() {
         full.is_superset(&names(&[
             "UniffiStructuralEquality",
             "RuntimeUniffiRustFutureContinuationCallback",
+            "RuntimeUniffiForeignFuture",
             "UniffiRustCallStatus",
             "UniffiGcObject",
             "UniffiResult",

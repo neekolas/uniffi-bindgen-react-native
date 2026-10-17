@@ -9,12 +9,14 @@
 #include <memory>
 #include <ReactCommon/CallInvoker.h>
 #include "UniffiCallInvoker.h"
+#include "UniffiHandleRegistry.h"
 
 namespace react = facebook::react;
 namespace jsi = facebook::jsi;
 
 class {{ module_name }} : public jsi::HostObject {
   private:
+    std::shared_ptr<uniffi_runtime::CallbackGeneration> generation;
     // For calling back into JS from Rust.
     std::shared_ptr<uniffi_runtime::UniffiCallInvoker> callInvoker;
 
@@ -34,7 +36,7 @@ class {{ module_name }} : public jsi::HostObject {
      * React Native must call `{{ module_name }}.registerModule(rt, callInvoker)` before using
      * the Javascript interface.
      */
-    static void registerModule(jsi::Runtime &rt, std::shared_ptr<react::CallInvoker> callInvoker);
+    static std::shared_ptr<uniffi_runtime::UniffiCallInvoker> registerModule(jsi::Runtime &rt, std::shared_ptr<react::CallInvoker> callInvoker);
 
     /**
      * Some cleanup into the crate goes here.
@@ -43,7 +45,8 @@ class {{ module_name }} : public jsi::HostObject {
      *
      * Clients should call `{{ module_name }}.unregisterModule(rt)` after final use where possible.
      */
-    static void unregisterModule(jsi::Runtime &rt);
+    static void unregisterModule(jsi::Runtime &rt,
+        std::shared_ptr<uniffi_runtime::UniffiCallInvoker> expected = nullptr);
 
     virtual jsi::Value get(jsi::Runtime& rt, const jsi::PropNameID& name);
     virtual void set(jsi::Runtime& rt,const jsi::PropNameID& name,const jsi::Value& value);

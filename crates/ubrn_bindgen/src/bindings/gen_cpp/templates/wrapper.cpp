@@ -6,6 +6,9 @@
 #include "{{ module.hpp_filename() }}"
 
 #include "UniffiJsiTypes.h"
+{%- for include in config.includes %}
+#include "{{ include }}"
+{%- endfor %}
 #include <stdexcept>
 #include <map>
 #include <utility>
@@ -15,24 +18,12 @@
 namespace react = facebook::react;
 namespace jsi = facebook::jsi;
 
-// Calling into Rust.
-extern "C" {
-    {%- for definition in ci.ffi_definitions() %}
-    {%- match definition %}
-    {%- when FfiDefinition::Struct(ffi_struct) %}
-    {%- call cpp::callback_struct_decl(ffi_struct) %}
-    {%- when FfiDefinition::CallbackFunction(callback) %}
-    {%- call cpp::callback_fn_decl(callback) %}
-    {%- when FfiDefinition::Function with(func) %}
-    {% call cpp::rust_fn_decl(func) %}
-    {%- else %}
-    {%- endmatch %}
-    {%- endfor %}
-}
+{% include "ffi_declarations.hpp" %}
 
 {% include "BridgingHelper.cpp" %}
 {% include "RustBufferHelper.cpp" %}
 {% include "RustCallStatusHelper.cpp" %}
+{{ native_future_disposal }}
 {% include "VTableRegistryHelper.cpp" %}
 
 // This calls into Rust.
@@ -77,7 +68,7 @@ extern "C" {
 {{ module_name }}::{{ module_name }}(
     jsi::Runtime &rt,
     std::shared_ptr<uniffi_runtime::UniffiCallInvoker> invoker
-) : callInvoker(invoker), props() {
+) : generation(uniffi_runtime::installHandleAllocator(rt, invoker)), callInvoker(generation->invoker), props() {
     // Map from Javascript names to the cpp names
     {%- for func in ci.iter_ffi_functions_js_to_cpp() %}
     {%- let name = func.name()|fmt("ubrn_{}") %}
@@ -187,15 +178,20 @@ extern "C" {
     );
 }
 
-void {{ module_name }}::registerModule(jsi::Runtime &rt, std::shared_ptr<react::CallInvoker> callInvoker) {
+std::shared_ptr<uniffi_runtime::UniffiCallInvoker> {{ module_name }}::registerModule(jsi::Runtime &rt, std::shared_ptr<react::CallInvoker> callInvoker) {
     auto invoker = std::make_shared<uniffi_runtime::UniffiCallInvoker>(callInvoker);
     auto tm = std::make_shared<{{ module_name }}>(rt, invoker);
+    tm->generation->clearModules.emplace_back([weak = std::weak_ptr<{{ module_name }}>(tm)] {
+        if (auto module = weak.lock()) module->props.clear();
+    });
     auto obj = rt.global().createFromHostObject(rt, tm);
     rt.global().setProperty(rt, "{{ module_name }}", obj);
+    return tm->callInvoker;
 }
 
-void {{ module_name }}::unregisterModule(jsi::Runtime &rt) {
-    {{ registry }}::clearRegistry();
+void {{ module_name }}::unregisterModule(jsi::Runtime &rt,
+    std::shared_ptr<uniffi_runtime::UniffiCallInvoker> expected) {
+    uniffi_runtime::invalidateCallbacks(rt, expected);
 }
 
 jsi::Value {{ module_name }}::get(jsi::Runtime& rt, const jsi::PropNameID& name) {
@@ -220,31 +216,7 @@ void {{ module_name }}::set(jsi::Runtime& rt, const jsi::PropNameID& name, const
 }
 
 {{ module_name }}::~{{ module_name }}() {
-{%- for def in ci.ffi_definitions() %}
-{%-   match def %}
-{%-     when FfiDefinition::CallbackFunction(callback) %}
-{%-       if callback.is_rust_calling_js() %}
-{%-         if callback.is_free_callback() %}
-    // Cleanup for "free" callback function {{ callback.name() }}
-{%            call cpp::callback_fn_free_cleanup(callback) %}
-{%-         else %}
-{%-           if !callback.is_user_callback() %}
-    // Cleanup for callback function {{ callback.name() }}
-{%              call cpp::callback_fn_cleanup(callback) %}
-{%-           endif %}
-{%-         endif %}
-{%-       endif %}
-{%-     when FfiDefinition::Struct(ffi_struct) %}
-{%-       if ffi_struct.is_vtable() %}
-{%-         for field in ffi_struct.ffi_functions() %}
-{%-           if field.is_user_callback() %}
-{%              call cpp::callback_fn_vtable_field_cleanup(ffi_struct, field) %}
-{%-           endif %}
-{%-         endfor %}
-{%-       endif %}
-{%-     else %}
-{%-   endmatch %}
-{%- endfor %}
+    generation->invalidate();
 }
 
 {%- include "StringHelper.cpp" %}

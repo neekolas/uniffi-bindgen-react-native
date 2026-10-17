@@ -1,44 +1,15 @@
 {%- let name = callback.name()|ffi_callback_name %}
 {%- let return_type = callback.return_type() %}
-
-// Callback function: {{ ns }}::{{ name }}
-//
-// We have the following constraints:
-// - we need to pass a function pointer to Rust.
-// - we need a jsi::Runtime and jsi::Function to call into JS.
-// - function pointers can't store state, so we can't use a lamda.
-//
-// For this, we store a lambda as a global, as `rsLambda`. The `callback` function calls
-// the lambda, which itself calls the `body` which then calls into JS.
-//
-// We then give the `callback` function pointer to Rust which will call the lambda sometime in the
-// future.
+{%- let first_arg = callback.arguments()[0].name()|var_name|fmt("rs_{}") %}
 namespace {{ ns }} {
     using namespace facebook;
-
-    // We need to store a lambda in a global so we can call it from
-    // a function pointer. The function pointer is passed to Rust.
-    static std::function<void(
-        {%- for arg in callback.arguments() %}
-        {%-   let arg_t = arg.type_().borrow()|ffi_type_name %}
-        {{- arg_t }}
-        {%- if !loop.last %}, {% endif %}
-        {%- endfor %}
-        {%- if callback.has_rust_call_status_arg() -%}
-        , RustCallStatus*
-        {%- endif -%}
-        {%- match return_type -%}
-        {%- when Some(return_type) -%}
-        {%- if !callback.arguments().is_empty() || callback.has_rust_call_status_arg() %}, {% endif %}
-        {{- return_type|ffi_type_name }}*
-        {%- when None -%}
-        {%- endmatch -%})> rsLambda = nullptr;
-
-    // This is the main body of the callback. It's called from the lambda,
-    // which itself is called from the callback function which is passed to Rust.
+    static const char callbackSlot = 0;
     static void body(jsi::Runtime &rt,
                      std::shared_ptr<uniffi_runtime::UniffiCallInvoker> callInvoker,
-                     std::shared_ptr<jsi::Value> callbackValue
+                     const jsi::Value &callbackValue, bool *argumentsHandedOff
+            {%- if let Some(completion) = callback.async_completion(ci) %}
+            , std::shared_ptr<uniffi_runtime::ForeignCompletion<{{ completion.name()|ffi_callback_name }}, {{ completion.completion_result().borrow()|ffi_type_name }}>> completionState
+            {%- endif %}
             {%- for arg in callback.arguments() %}
             {%-   let arg_t = arg.type_().borrow()|ffi_type_name %}
             {%-   let arg_nm_rs = arg.name()|var_name|fmt("rs_{}") %}
@@ -59,7 +30,11 @@ namespace {{ ns }} {
         {%-   let arg_nm_rs = arg.name()|var_name|fmt("rs_{}") %}
         {%-   let arg_t = arg.type_().borrow()|ffi_type_name_from_js %}
         {%-   let arg_nm = arg.name()|var_name|fmt("js_{}") %}
+        {%- if arg.name() == "uniffi_future_callback" %}
+        auto {{ arg_nm }} = {{ arg.type_().borrow()|bridging_class(ci) }}::toJsOwned(rt, callInvoker, completionState);
+        {%- else %}
         auto {{ arg_nm }} = {{ arg.type_().borrow()|bridging_class(ci) }}::toJs(rt, callInvoker, {{ arg_nm_rs }});
+        {%- endif %}
         {%- endfor %}
 
         // Now we are ready to call the callback.
@@ -67,7 +42,8 @@ namespace {{ ns }} {
         // invoked from the CallInvoker.
         try {
             // Getting the callback function
-            auto cb = callbackValue->asObject(rt).asFunction(rt);
+            auto cb = callbackValue.asObject(rt).asFunction(rt);
+            if (argumentsHandedOff) *argumentsHandedOff = true;
             auto uniffiResult = cb.call(rt
             {%- for arg in callback.arguments_no_return() %}
             {%-   let arg_nm = arg.name()|var_name|fmt("js_{}") -%}
@@ -102,6 +78,9 @@ namespace {{ ns }} {
                 >::fromJs(
                     rt, callInvoker, uniffiResult
                 );
+            {%- if is_async %}
+            uniffi_runtime::HandleRegistry::instance().attach({{ return_var }}->handle, completionState);
+            {%- endif %}
             {%- else %}
             {%- endmatch %}
 
@@ -122,143 +101,113 @@ namespace {{ ns }} {
         }
     }
 
+
     static {% match return_type %}{%- when Some(return_type) %}{{ return_type|ffi_type_name }}{%- when None %}void{%- endmatch %} callback(
             {%- for arg in callback.arguments() %}
-            {%-   let arg_t = arg.type_().borrow()|ffi_type_name %}
-            {%-   let arg_nm_rs = arg.name()|var_name|fmt("rs_{}") %}
-            {{- arg_t }} {{ arg_nm_rs }}
-            {%- if !loop.last %}, {% endif %}
+            {{ arg.type_().borrow()|ffi_type_name }} {{ arg.name()|var_name|fmt("rs_{}") }}{% if !loop.last %}, {% endif %}
             {%- endfor %}
-            {%- if callback.has_rust_call_status_arg() -%}
-            , RustCallStatus* uniffi_call_status
-            {%- endif -%}) {
-        // If the runtime has shutdown, then there is no point in trying to
-        // call into Javascript. BUT how do we tell if the runtime has shutdown?
-        //
-        // Answer: the module destructor calls into callback `cleanup` method,
-        // which nulls out the rsLamda.
-        //
-        // If rsLamda is null, then there is no runtime to call into.
-        if (rsLambda == nullptr) {
-            // This only occurs when destructors are calling into Rust free/drop,
-            // which causes the JS callback to be dropped.
-            {%- match return_type %}
-            {%- when Some(_) %}
-            return 0;
-            {%- when None %}
-            return;
-            {%- endmatch %}
-        }
-
-        {%- match return_type -%}
-        {%- when Some(return_type) %}
-        {{ return_type|ffi_type_name }} uniffi_result = 0;
-        {%- when None -%}
-        {%- endmatch %}
-
-        // The runtime, the actual callback jsi::funtion, and the callInvoker
-        // are all in the lambda.
-        rsLambda(
-            {%- for arg in callback.arguments() %}
-            {%-   let arg_nm_rs = arg.name()|var_name|fmt("rs_{}") %}
-            {{ arg_nm_rs }}
-            {%- if !loop.last %}, {% endif %}
-            {%- endfor %}
-            {%- if callback.has_rust_call_status_arg() -%}
-            , uniffi_call_status
-            {%- endif -%}
-            {%- if return_type.is_some() -%}
-            {%- if !callback.arguments().is_empty() || callback.has_rust_call_status_arg() %}, {% endif %}
-            &uniffi_result
-            {%- endif -%}
-        );
-
+            {%- if callback.has_rust_call_status_arg() %}, RustCallStatus* uniffi_call_status{% endif %}) noexcept {
         {%- if return_type.is_some() %}
-        return uniffi_result;
+        {{ return_type.unwrap()|ffi_type_name }} uniffi_result{};
+        {%- endif %}
+        {%- if let Some(arg_t) = callback.arg_return_type() %}
+        *{{ callback.arg_return_cpp_name() }} = {};
+        {%- if arg_t.is_foreign_future() %}
+        {{ callback.arg_return_cpp_name() }}->free = [](uint64_t) {};
+        {%- endif %}
+        {%- endif %}
+        {%- if callback.has_rust_call_status_arg() %}
+        *uniffi_call_status = {};
+        {%- endif %}
+        auto &handles = uniffi_runtime::HandleRegistry::instance();
+        {%- if callback.is_drop_callback() %}
+        handles.cancel({{ first_arg }});
+        {%- endif %}
+        {%- if let Some(completion) = callback.async_completion(ci) %}
+        using Completion = uniffi_runtime::ForeignCompletion<{{ completion.name()|ffi_callback_name }}, {{ completion.completion_result().borrow()|ffi_type_name }}>;
+        std::shared_ptr<Completion> completionState;
+        {%- endif %}
+        auto lease = handles.acquire({{ first_arg }}, "{{ callback.handle_kind() }}");
+        {%- if !callback.is_blocking() %}
+        // UniFFI invokes continuations under its scheduler lock. They must not
+        // wait for JS, which may immediately poll that same future again.
+        try {
+            auto generation = lease.owner;
+            auto retirement = std::make_shared<uniffi_runtime::HandleRetirement>({{ first_arg }}, std::move(lease));
+            if (generation) {
+                generation->invoker->invokeNonBlocking(generation->runtime,
+                    [generation, retirement
+                    {%- for arg in callback.arguments() %}, {{ arg.name()|var_name|fmt("rs_{}") }}{% endfor %}](jsi::Runtime &rt) {
+                    retirement->run([&] {
+                        auto found = generation->callbacks.find(&callbackSlot);
+                        if (found == generation->callbacks.end()) return;
+                        body(rt, generation->invoker, found->second, nullptr
+                        {%- for arg in callback.arguments() %}, {{ arg.name()|var_name|fmt("rs_{}") }}{% endfor %});
+                    });
+                });
+            }
+        } catch (...) { /* C ABI callbacks cannot throw. */ }
+        return;
+        {%- else %}
+        bool entered = false;
+        bool dispatched = false;
+        try {
+            {%- if let Some(completion) = callback.async_completion(ci) %}
+            completionState = std::make_shared<Completion>(rs_uniffiFutureCallback, rs_uniffiCallbackData, [] {
+                {{ completion.completion_result().borrow()|ffi_type_name }} result{};
+                result.call_status = {{ ci.cpp_namespace() }}::callbackFailure();
+                return result;
+            }, lease.owner);
+            {%- endif %}
+            if (lease) {
+                auto generation = lease.owner;
+                {%- if callback.async_completion(ci).is_some() %}
+                { std::lock_guard<std::mutex> lock(generation->pendingMutex);
+                  generation->pending.emplace(completionState.get(), completionState); }
+                {%- endif %}
+                dispatched = generation->invoker->invokeBlocking(generation->runtime, [&](jsi::Runtime &rt) {
+                    auto found = generation->callbacks.find(&callbackSlot);
+                    if (found == generation->callbacks.end()) return;
+                    body(rt, generation->invoker, found->second, &entered
+                        {%- if callback.async_completion(ci).is_some() %}, completionState{% endif %}
+                        {%- for arg in callback.arguments() %}, {{ arg.name()|var_name|fmt("rs_{}") }}{% endfor %}
+                        {%- if callback.has_rust_call_status_arg() %}, uniffi_call_status{% endif %}
+                        {%- if return_type.is_some() %}, &uniffi_result{% endif %});
+                }) && entered;
+            }
+        } catch (...) { dispatched = false; }
+        if (!dispatched) {
+            {%- if callback.is_continuation_callback() %}
+            handles.release({{ first_arg }});
+            {%- endif %}
+            {%- if callback.is_clone_callback() %}
+            uniffi_result = handles.retain({{ first_arg }});
+            {%- endif %}
+            {%- if callback.is_drop_callback() %}
+            handles.cancel({{ first_arg }});
+            handles.release({{ first_arg }});
+            {%- endif %}
+            {%- if callback.async_completion(ci).is_some() %}
+            if (completionState) completionState->cancel();
+            {%- endif %}
+            {%- if callback.has_rust_call_status_arg() %}
+            *uniffi_call_status = {{ ci.cpp_namespace() }}::callbackFailure();
+            {%- endif %}
+            if (!entered) {
+                {%- for arg in callback.arguments_no_return() %}
+                {%- if arg.type_().is_rust_buffer() %}
+                {{ ci.cpp_namespace() }}::Bridging<RustBuffer>::rustbuffer_free({{ arg.name()|var_name|fmt("rs_{}") }});
+                {%- endif %}
+                {%- endfor %}
+            }
+        }
+        {%- if return_type.is_some() %}return uniffi_result;{% endif %}
         {%- endif %}
     }
-
-    [[maybe_unused]] static {{ name }}
-    makeCallbackFunction( // {{ ns }}
-                    jsi::Runtime &rt,
-                     std::shared_ptr<uniffi_runtime::UniffiCallInvoker> callInvoker,
-                     const jsi::Value &value) {
-        if (rsLambda != nullptr) {
-            // `makeCallbackFunction` is called in two circumstances:
-            //
-            // 1. at startup, when initializing callback interface vtables.
-            // 2. when polling futures. This happens at least once per future that is
-            //    exposed to Javascript. We know that this is always the same function,
-            //    `uniffiFutureContinuationCallback` in `async-rust-calls.ts`.
-            //
-            // We can therefore return the callback function without making anything
-            // new if we've been initialized already.
-            return callback;
-        }
-        auto callbackFunction = value.asObject(rt).asFunction(rt);
-        auto callbackValue = std::make_shared<jsi::Value>(rt, callbackFunction);
-        rsLambda = [&rt, callInvoker, callbackValue](
-            {%- for arg in callback.arguments() %}
-            {%-   let arg_t = arg.type_().borrow()|ffi_type_name %}
-            {%-   let arg_nm_rs = arg.name()|var_name|fmt("rs_{}") %}
-            {{- arg_t }} {{ arg_nm_rs }}
-            {%- if !loop.last %}, {% endif %}
-            {%- endfor %}
-            {%- if callback.has_rust_call_status_arg() -%}
-            , RustCallStatus* uniffi_call_status
-            {%- endif -%}
-            {%- match return_type -%}
-            {%- when Some(return_type) -%}
-            {%- if !callback.arguments().is_empty() || callback.has_rust_call_status_arg() %}, {% endif %}
-            {{- return_type|ffi_type_name }}* uniffi_direct_return
-            {%- when None -%}
-            {%- endmatch -%}
-            ) {
-                // We immediately make a lambda which will do the work of transforming the
-                // arguments into JSI values and calling the callback.
-                uniffi_runtime::UniffiCallFunc jsLambda = [
-                    callInvoker,
-                    callbackValue
-                    {%- for arg in callback.arguments() %}
-                    {%-   let arg_nm_rs = arg.name()|var_name|fmt("rs_{}") %}
-                    , {{ arg_nm_rs }}
-                    {%- endfor %}
-                    {%- if callback.has_rust_call_status_arg() -%}
-                    , uniffi_call_status
-                    {%- endif -%}
-                    {%- if return_type.is_some() -%}
-                    , uniffi_direct_return
-                    {%- endif -%}
-                ](jsi::Runtime &rt) mutable {
-                    body(rt, callInvoker, callbackValue
-                        {%- for arg in callback.arguments() %}
-                        {%-   let arg_nm_rs = arg.name()|var_name|fmt("rs_{}") %}
-                        , {{ arg_nm_rs }}
-                        {%- endfor %}
-                        {%- if callback.has_rust_call_status_arg() -%}
-                        , uniffi_call_status
-                        {%- endif -%}
-                        {%- if return_type.is_some() -%}
-                        , uniffi_direct_return
-                        {%- endif -%}
-                    );
-                };
-                // We'll then call that lambda from the callInvoker which will
-                // look after calling it on the correct thread.
-                {% if callback.is_blocking() -%}
-                callInvoker->invokeBlocking(rt, jsLambda);
-                {%- else %}
-                callInvoker->invokeNonBlocking(rt, jsLambda);
-                {%- endif %}
-        };
+    [[maybe_unused]] static {{ name }} makeCallbackFunction(jsi::Runtime &rt,
+        std::shared_ptr<uniffi_runtime::UniffiCallInvoker>, const jsi::Value &value) {
+        auto generation = uniffi_runtime::callbackGeneration(rt);
+        generation->callbacks.insert_or_assign(&callbackSlot, jsi::Value(rt, value));
         return callback;
-    }
-
-    // This method is called from the destructor of {{ module_name }}, which only happens
-    // when the jsi::Runtime is being destroyed.
-    static void cleanup() {
-        // The lambda holds a reference to the the Runtime, so when this is nulled out,
-        // then the pointer will no longer be left dangling.
-        rsLambda = nullptr;
     }
 } // namespace {{ ns }}
